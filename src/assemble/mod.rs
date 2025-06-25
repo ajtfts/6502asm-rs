@@ -1,0 +1,998 @@
+use std::borrow::Borrow;
+use std::collections::HashMap;
+use std::env;
+use std::error::Error;
+use std::fs::File;
+use std::io::{self, BufRead, Write};
+use std::process;
+
+use lazy_static::lazy_static;
+
+use anyhow::Result;
+use anyhow::bail;
+
+use regex::Regex;
+
+lazy_static! {
+    static ref OPCODES: HashMap<String, Vec<u8>> = {
+        let mut map = HashMap::new();
+
+        map.insert(
+            "ADC".to_string(),
+            vec![
+                0x00, 0x6d, 0x7d, 0x79, 0x69, 0x00, 0x00, 0x61, 0x71, 0x00, 0x65, 0x75, 0x00,
+            ],
+        );
+
+        map.insert(
+            "AND".to_string(),
+            vec![
+                0x00, 0x2d, 0x3d, 0x39, 0x29, 0x00, 0x00, 0x21, 0x31, 0x00, 0x25, 0x35, 0x00,
+            ],
+        );
+
+        map.insert(
+            "ASL".to_string(),
+            vec![
+                0x0a, 0x0e, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x16, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BCC".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BCS".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BEQ".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BIT".to_string(),
+            vec![
+                0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BMI".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BNE".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BPL".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BRK".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BVC".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "BVS".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CLC".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CLD".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CLI".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CLV".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CMP".to_string(),
+            vec![
+                0x00, 0xcd, 0xdd, 0xd9, 0xc9, 0x00, 0x00, 0xc1, 0xd1, 0x00, 0xc5, 0xd5, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CPX".to_string(),
+            vec![
+                0x00, 0xec, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "CPY".to_string(),
+            vec![
+                0x00, 0xcc, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc4, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "DEC".to_string(),
+            vec![
+                0x00, 0xce, 0xde, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc6, 0xd6, 0x00,
+            ],
+        );
+
+        map.insert(
+            "DEX".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "DEY".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "EOR".to_string(),
+            vec![
+                0x00, 0x4d, 0x5d, 0x59, 0x49, 0x00, 0x00, 0x41, 0x51, 0x00, 0x45, 0x55, 0x4d,
+            ],
+        );
+
+        map.insert(
+            "INC".to_string(),
+            vec![
+                0x00, 0xee, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe6, 0xf6, 0x00,
+            ],
+        );
+
+        map.insert(
+            "INX".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "INY".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "JMP".to_string(),
+            vec![
+                0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "JSR".to_string(),
+            vec![
+                0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "LDA".to_string(),
+            vec![
+                0x00, 0xad, 0xbd, 0xb9, 0xa9, 0x00, 0x00, 0xa1, 0xb1, 0x00, 0xa5, 0xb5, 0x00,
+            ],
+        );
+
+        map.insert(
+            "LDX".to_string(),
+            vec![
+                0x00, 0xae, 0x00, 0xbe, 0xa2, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa6, 0x00, 0xb6,
+            ],
+        );
+
+        map.insert(
+            "LDY".to_string(),
+            vec![
+                0x00, 0xac, 0xbc, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa4, 0xb4, 0x00,
+            ],
+        );
+
+        map.insert(
+            "LSR".to_string(),
+            vec![
+                0x4a, 0x4e, 0x5e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x56, 0x00,
+            ],
+        );
+        map.insert(
+            "NOP".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "ORA".to_string(),
+            vec![
+                0x00, 0x0d, 0x1d, 0x19, 0x09, 0x00, 0x00, 0x01, 0x11, 0x00, 0x05, 0x15, 0x00,
+            ],
+        );
+
+        map.insert(
+            "PHA".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "PHP".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "PLP".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "ROL".to_string(),
+            vec![
+                0x2a, 0x2e, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26, 0x36, 0x00,
+            ],
+        );
+
+        map.insert(
+            "ROR".to_string(),
+            vec![
+                0x6a, 0x6e, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x66, 0x76, 0x00,
+            ],
+        );
+
+        map.insert(
+            "RTI".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "RTS".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "SBC".to_string(),
+            vec![
+                0x00, 0xed, 0xfd, 0xf9, 0x00, 0x00, 0x00, 0xe1, 0xf1, 0x00, 0xe5, 0xf5, 0x00,
+            ],
+        );
+
+        map.insert(
+            "SEC".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "SED".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "SEI".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "STA".to_string(),
+            vec![
+                0x00, 0x8d, 0x9d, 0x99, 0x00, 0x00, 0x00, 0x81, 0x91, 0x00, 0x85, 0x95, 0x00,
+            ],
+        );
+
+        map.insert(
+            "STX".to_string(),
+            vec![
+                0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86, 0x00, 0x96,
+            ],
+        );
+
+        map.insert(
+            "STY".to_string(),
+            vec![
+                0x00, 0x8c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x84, 0x94, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TAX".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TAY".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TSX".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TXA".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TXS".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map.insert(
+            "TYA".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
+        );
+
+        map
+    };
+    static ref ONE_BYTE: Regex = Regex::new(r"^[0-9A-Fa-f]{2}$").unwrap();
+    static ref TWO_BYTE: Regex = Regex::new(r"^[0-9A-Fa-f]{4}$").unwrap();
+}
+
+pub struct Config {
+    pub input: String,
+    pub output: String,
+}
+
+impl Config {
+    pub fn new(args: &[String]) -> Result<Config, &str> {
+        if args.len() < 3 {
+            return Err("not enough arguments");
+        }
+
+        let input = args[1].clone();
+        let output = args[2].clone();
+
+        Ok(Config { input, output })
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum AddressMode {
+    A,    // accumulator
+    Abs,  // absolute
+    AbsX, // absolute, X-indexed
+    AbsY, // absolute, Y-indexed
+    Imm,  // immediate
+    Imp,  // implied
+    Ind,  // indirect
+    XInd, // x-indexed, indirect
+    IndY, // indirect, Y-indexed
+    Rel,  // relative
+    Zpg,  // zeropage
+    ZpgX, // zeropage, X-indexed
+    ZpgY, // zeropage, Y-indexed
+}
+
+fn tokenize(line: &str, tokens: &mut Vec<String>) {
+    let mut building = false;
+    let mut token_start = 0;
+    let mut token_end = 0;
+
+    for (i, c) in line.chars().enumerate() {
+        match c {
+            '#' | '$' | '(' | ')' | ',' => {
+                if token_end - token_start > 0 {
+                    tokens.push(line[token_start..token_end].to_string());
+                }
+                tokens.push(c.to_string());
+                building = false;
+                token_start = 0;
+                token_end = 0;
+                continue;
+            }
+            _ => {}
+        }
+        if !building {
+            match c {
+                x if x.is_whitespace() => continue,
+                ';' => break,
+                'X' | 'x' | 'Y' | 'y' => tokens.push(c.to_string()),
+                'A' | 'a' => {
+                    if tokens.len() == 1 {
+                        tokens.push("A".to_string());
+                    } else {
+                        building = true;
+                        token_start = i;
+                        token_end = token_start + 1;
+                    }
+                }
+                _ => {
+                    building = true;
+                    token_start = i;
+                    token_end = token_start + 1;
+                }
+            }
+        } else {
+            if c.is_whitespace() {
+                tokens.push(line[token_start..token_end].to_string());
+                building = false;
+                token_start = 0;
+                token_end = 0;
+            } else {
+                token_end += 1;
+            }
+        }
+    }
+
+    if token_end - token_start > 0 {
+        tokens.push(line[token_start..token_end].to_string());
+    }
+}
+
+fn parse_line(line: &str, buf: &mut Vec<u8>) -> Result<()> {
+    let mut tokens: Vec<String> = Vec::new();
+
+    tokenize(line, &mut tokens);
+
+    let mut mode: AddressMode = AddressMode::Imp;
+
+    match tokens.len() {
+        0 => return Ok(()),
+        1 => mode = AddressMode::Imp,
+        2 => {
+            if tokens[1] == "A" {
+                mode = AddressMode::A;
+            } else {
+                bail!("Could not determine addressing mode: {}", line);
+            }
+        }
+        3 => {
+            if tokens[1] == "$" {
+                if ONE_BYTE.is_match(&tokens[2][..]) {
+                    mode = match &tokens[0][..] {
+                        "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
+                            AddressMode::Rel
+                        }
+                        _ => AddressMode::Zpg,
+                    }
+                } else if TWO_BYTE.is_match(&tokens[2][..]) {
+                    mode = AddressMode::Abs;
+                } else {
+                    bail!("Could not determine addressing mode: {}", line);
+                }
+            } else {
+                bail!("Could not determine addressing mode: {}", line);
+            }
+        }
+        4 => {
+            if tokens[1] == "#" && tokens[2] == "$" {
+                if ONE_BYTE.is_match(&tokens[3][..]) {
+                    mode = AddressMode::Imm;
+                } else {
+                    bail!("Could not determine addressing mode: {}", line);
+                }
+            }
+        }
+        5 => {
+            if tokens[1] == "$" && tokens[3] == "," {
+                if ONE_BYTE.is_match(&tokens[2][..]) {
+                    match &tokens[4][..] {
+                        "X" => mode = AddressMode::ZpgX,
+                        "Y" => mode = AddressMode::ZpgY,
+                        _ => bail!("Could not determine addressing mode: {}", line),
+                    }
+                } else if TWO_BYTE.is_match(&tokens[2][..]) {
+                    match &tokens[4][..] {
+                        "X" => mode = AddressMode::AbsX,
+                        "Y" => mode = AddressMode::AbsY,
+                        _ => bail!("Could not determine addressing mode: {}", line),
+                    }
+                } else {
+                    bail!("Could not determine addressing mode: {}", line);
+                }
+            } else if tokens[1] == "("
+                && tokens[2] == "$"
+                && TWO_BYTE.is_match(&tokens[3][..])
+                && tokens[4] == ")"
+            {
+                mode = AddressMode::Ind;
+            } else {
+                bail!("Could not determine addressing mode: {}", line);
+            }
+        }
+        7 => {
+            if tokens[1] == "(" && tokens[2] == "$" && ONE_BYTE.is_match(&tokens[3][..]) {
+                if tokens[4] == "," && tokens[5] == "X" && tokens[6] == ")" {
+                    mode = AddressMode::XInd;
+                } else if tokens[4] == ")" && tokens[5] == "," && tokens[6] == "Y" {
+                    mode = AddressMode::IndY;
+                } else {
+                    bail!("Could not determine addressing mode: {}", line);
+                }
+            } else {
+                bail!("Could not determine addressing mode: {}", line);
+            }
+        }
+        _ => bail!("Could not determine addressing mode: {}", line),
+    }
+
+    if !OPCODES.contains_key(&tokens[0]) {
+        bail!("Unrecognized opcode: {}", tokens[0]);
+    }
+
+    let opcode = OPCODES.get(&tokens[0]).unwrap()[mode as usize];
+    buf.push(opcode);
+
+    match mode {
+        AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY => {
+            let raw = hex::decode(&tokens[2]).unwrap();
+            let low: u8 = raw[0];
+            let high: u8 = raw[1];
+            buf.push(high);
+            buf.push(low);
+        }
+        AddressMode::Imm | AddressMode::XInd | AddressMode::IndY => {
+            let low: u8 = hex::decode(&tokens[3]).unwrap()[0];
+            buf.push(low);
+        }
+        AddressMode::Rel | AddressMode::Zpg | AddressMode::ZpgX | AddressMode::ZpgY => {
+            let low: u8 = hex::decode(&tokens[2]).unwrap()[0];
+            buf.push(low);
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn parse_lines<I>(lines: I, buf: &mut Vec<u8>) -> Result<()>
+where
+    I: IntoIterator,
+    I::Item: Borrow<str>,
+{
+    for line in lines {
+        if let Err(e) = parse_line(line.borrow(), buf) {
+            panic!("Invalid assembly syntax: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn assemble_from_str(src: &'static str) -> Vec<u8> {
+    let mut data: Vec<u8> = Vec::new();
+    if let Err(e) = parse_lines(src.lines(), &mut data) {
+        panic!("{}", e);
+    }
+    data
+}
+
+pub fn assemble_from_file(config: Config) -> Result<()> {
+    let input_file = File::open(config.input)?;
+    let b = io::BufReader::new(input_file);
+
+    let mut data: Vec<u8> = Vec::new();
+
+    if let Err(e) = parse_lines(b.lines().map(|l| l.expect("Invalid line")), &mut data) {
+        panic!("{}", e);
+    }
+
+    let mut output = File::create(config.output)?;
+    output.write_all(&data[..])?;
+
+    Ok(())
+}
+
+pub(crate) fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+
+    let config = Config::new(&args).unwrap_or_else(|err| {
+        println!("Problem parsing arguments: {}", err);
+        process::exit(1);
+    });
+
+    if let Err(e) = assemble_from_file(config) {
+        println!("Application error: {}", e);
+
+        process::exit(1);
+    }
+    Ok(())
+}
+
+mod tests {
+    use crate::assemble::*;
+
+    // Tokenization
+    #[test]
+    fn tokenize_imp() {
+        let mut tokens: Vec<String> = Vec::with_capacity(1);
+
+        tokenize("BRK", &mut tokens);
+
+        assert_eq!(tokens.len(), 1);
+
+        assert_eq!(tokens[0], "BRK");
+    }
+
+    #[test]
+    fn tokenize_acc() {
+        let mut tokens: Vec<String> = Vec::with_capacity(1);
+
+        tokenize("LSR A", &mut tokens);
+
+        assert_eq!(tokens.len(), 2);
+
+        assert_eq!(tokens[0], "LSR");
+        assert_eq!(tokens[1], "A");
+    }
+
+    #[test]
+    fn tokenize_acc_1() {
+        let mut tokens: Vec<String> = Vec::with_capacity(1);
+
+        tokenize(
+            "LSR A;here's a comment! awfully close there...",
+            &mut tokens,
+        );
+
+        assert_eq!(tokens.len(), 2);
+
+        assert_eq!(tokens[0], "LSR");
+        assert_eq!(tokens[1], "A");
+    }
+
+    #[test]
+    fn tokenize_abs() {
+        let mut tokens: Vec<String> = Vec::with_capacity(1);
+
+        tokenize("LDA $3c1d", &mut tokens);
+
+        assert_eq!(tokens.len(), 3);
+
+        assert_eq!(tokens[0], "LDA");
+        assert_eq!(tokens[1], "$");
+        assert_eq!(tokens[2], "3c1d");
+    }
+
+    #[test]
+    fn tokenize_comment_0() {
+        let mut tokens: Vec<String> = Vec::with_capacity(1);
+
+        tokenize("BRK ;here's a comment!", &mut tokens);
+
+        assert_eq!(tokens.len(), 1);
+
+        assert_eq!(tokens[0], "BRK");
+    }
+
+    #[test]
+    fn tokenize_zp_x() {
+        let mut tokens: Vec<String> = Vec::with_capacity(5);
+
+        tokenize("LSR $01,X", &mut tokens);
+
+        assert_eq!(tokens.len(), 5);
+
+        assert_eq!(tokens[0], "LSR");
+        assert_eq!(tokens[1], "$");
+        assert_eq!(tokens[2], "01");
+        assert_eq!(tokens[3], ",");
+        assert_eq!(tokens[4], "X");
+    }
+
+    // Individual instruction parsing
+
+    #[test]
+    fn lsr_a() {
+        let mut data: Vec<u8> = Vec::with_capacity(1);
+
+        parse_line("LSR A", &mut data).unwrap();
+
+        assert_eq!(data.len(), 1);
+
+        assert_eq!(data[0], 0x4a);
+    }
+
+    #[test]
+    fn lsr_abs() {
+        let mut data: Vec<u8> = Vec::with_capacity(3);
+
+        parse_line("LSR $4283", &mut data).unwrap();
+
+        assert_eq!(data.len(), 3);
+
+        assert_eq!(data[0], 0x4e);
+        assert_eq!(data[1], 0x83); // little endian
+        assert_eq!(data[2], 0x42);
+    }
+
+    #[test]
+    fn lsr_abs_x() {
+        let mut data: Vec<u8> = Vec::with_capacity(3);
+
+        parse_line("LSR $AC82,X", &mut data).unwrap();
+
+        assert_eq!(data.len(), 3);
+
+        assert_eq!(data[0], 0x5e);
+        assert_eq!(data[1], 0x82);
+        assert_eq!(data[2], 0xac);
+    }
+
+    #[test]
+    fn lsr_zp() {
+        let mut data: Vec<u8> = Vec::with_capacity(2);
+
+        parse_line("LSR $af", &mut data).unwrap();
+
+        assert_eq!(data.len(), 2);
+
+        assert_eq!(data[0], 0x46);
+        assert_eq!(data[1], 0xaf);
+    }
+
+    #[test]
+    fn lsr_zp_x() {
+        let mut data: Vec<u8> = Vec::with_capacity(2);
+
+        parse_line("LSR $01,X", &mut data).unwrap();
+
+        assert_eq!(data.len(), 2);
+
+        assert_eq!(data[0], 0x56);
+        assert_eq!(data[1], 0x01);
+    }
+
+    #[test]
+    fn adc_i() {
+        let mut data: Vec<u8> = Vec::with_capacity(2);
+
+        parse_line("ADC #$c4", &mut data).unwrap();
+
+        assert_eq!(data.len(), 2);
+
+        assert_eq!(data[0], 0x69);
+        assert_eq!(data[1], 0xc4);
+    }
+
+    #[test]
+    fn lda_x_indirect() {
+        let mut data: Vec<u8> = Vec::with_capacity(2);
+
+        parse_line("LDA ($05,X)", &mut data).unwrap();
+
+        assert_eq!(data.len(), 2);
+
+        assert_eq!(data[0], 0xa1);
+        assert_eq!(data[1], 0x05);
+    }
+
+    #[test]
+    fn lda_indirect_y() {
+        let mut data: Vec<u8> = Vec::with_capacity(2);
+
+        parse_line("LDA ($10),Y", &mut data).unwrap();
+
+        assert_eq!(data.len(), 2);
+
+        assert_eq!(data[0], 0xb1);
+        assert_eq!(data[1], 0x10);
+    }
+
+    // Multiline parsing
+
+    #[test]
+    fn multi_adc() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "ADC #$c4 
+                                    ADC #$1f";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 4);
+
+        assert_eq!(data[0], 0x69);
+        assert_eq!(data[1], 0xc4);
+        assert_eq!(data[2], 0x69);
+        assert_eq!(data[3], 0x1f);
+    }
+
+    // Label testing
+
+    #[test]
+    fn dummy_label_1() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "BEGIN ADC #$c4 
+            ADC #$1f";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 4);
+
+        assert_eq!(data[0], 0x69);
+        assert_eq!(data[1], 0xc4);
+        assert_eq!(data[2], 0x69);
+        assert_eq!(data[3], 0x1f);
+    }
+
+    #[test]
+    fn dummy_label_2() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "LSR $4283
+            what ADC #$1f"; // lowercase labels should also work
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 5);
+
+        assert_eq!(data[0], 0x4E);
+        assert_eq!(data[1], 0x83);
+        assert_eq!(data[2], 0x42);
+        assert_eq!(data[3], 0x69);
+        assert_eq!(data[4], 0x1F);
+    }
+
+    #[test]
+    fn jmp_label_backward() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "BEGIN LDA #$ff
+    ADC #$c4
+    JMP BEGIN";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 7);
+
+        assert_eq!(data[0], 0xa9);
+        assert_eq!(data[1], 0xff);
+        assert_eq!(data[2], 0x69);
+        assert_eq!(data[3], 0xc4);
+        assert_eq!(data[4], 0x4c);
+        assert_eq!(data[5], 0x00);
+        assert_eq!(data[6], 0x00);
+    }
+
+    #[test]
+    fn jmp_label_forward() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "JMP END
+    ADC #$c4
+    END LDA #$FF";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 7);
+
+        assert_eq!(data[0], 0x4c);
+        assert_eq!(data[1], 0x05);
+        assert_eq!(data[2], 0x00);
+        assert_eq!(data[3], 0x69);
+        assert_eq!(data[4], 0xc4);
+        assert_eq!(data[5], 0xa9);
+        assert_eq!(data[6], 0xff);
+    }
+
+    #[test]
+    fn jmp_label_comments() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "START LDA #$01 ; This is the start
+        JMP START";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 5);
+
+        assert_eq!(data[0], 0xA9);
+        assert_eq!(data[1], 0x01);
+        assert_eq!(data[2], 0x4C);
+        assert_eq!(data[3], 0x00);
+        assert_eq!(data[4], 0x00);
+    }
+
+    #[test]
+    fn bne_label_relative() {
+        let mut data: Vec<u8> = Vec::with_capacity(20);
+
+        let src = "
+            ADC $1234
+            BNE LABEL
+            ADC $1234
+            LABEL LDA #$08
+        ";
+
+        if let Err(e) = parse_lines(src.lines(), &mut data) {
+            panic!("{}", e);
+        }
+
+        assert_eq!(data.len(), 10);
+
+        assert_eq!(data[5], 0x03);
+    }
+}
