@@ -324,8 +324,8 @@ pub struct CPU<'a> {
 impl<'a> CPU<'a> {
     pub fn new(prg: &'a [u8], ram: &'a mut [u8], config: Config) -> Self {
         CPU {
-            prg: prg,
-            config: config,
+            prg,
+            config,
             reg: Registers {
                 a: 0,
                 x: 0,
@@ -343,7 +343,7 @@ impl<'a> CPU<'a> {
                 zero: true,
                 carry: false,
             },
-            ram: ram,
+            ram,
         }
     }
 
@@ -367,7 +367,6 @@ impl<'a> CPU<'a> {
 
 mod tests {
     use super::*;
-    use crate::assemble;
 
     static NES_CONFIG: Config = Config {
         prg_offset: 0x8000,
@@ -376,7 +375,7 @@ mod tests {
 
     #[test]
     fn lda_imm_acc() {
-        let prg: Vec<u8> = assemble::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble_from_str(
             "
             LDA #$F1
         ",
@@ -391,7 +390,7 @@ mod tests {
 
     #[test]
     fn lda_imm_flag_neg() {
-        let prg: Vec<u8> = assemble::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble_from_str(
             "
             LDA #$03
             LDA #$80
@@ -419,7 +418,7 @@ mod tests {
 
     #[test]
     fn adc_imm_acc() {
-        let prg: Vec<u8> = assemble::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble_from_str(
             "
             ADC #$12
             ADC #$14
@@ -435,7 +434,7 @@ mod tests {
 
     #[test]
     fn adc_imm_flag() {
-        let prg: Vec<u8> = assemble::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble_from_str(
             "
             
         ",
@@ -444,7 +443,7 @@ mod tests {
 
     #[test]
     fn sta_a() {
-        let prg: Vec<u8> = assemble::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble_from_str(
             "
             ADC #$89
             STA $0200

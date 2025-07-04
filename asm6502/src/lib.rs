@@ -1,10 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::env;
-use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
-use std::process;
 
 use lazy_static::lazy_static;
 
@@ -449,7 +446,7 @@ fn tokenize(line: &str, tokens: &mut Vec<String>) {
 
     for (i, c) in line.chars().enumerate() {
         match c {
-            '#' | '$' | '(' | ')' | ',' => {
+            '#' | '$' | '(' | ')' | ',' | '*' | '+' | '-' => {
                 if token_end - token_start > 0 {
                     tokens.push(line[token_start..token_end].to_string());
                 }
@@ -652,25 +649,12 @@ pub fn assemble_from_file(config: Config) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
 
-    let config = Config::new(&args).unwrap_or_else(|err| {
-        println!("Problem parsing arguments: {}", err);
-        process::exit(1);
-    });
 
-    if let Err(e) = assemble_from_file(config) {
-        println!("Application error: {}", e);
-
-        process::exit(1);
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 mod tests {
-    use crate::assemble::*;
-
+    use super::*;
+    
     // Tokenization
     #[test]
     fn tokenize_imp() {
@@ -749,6 +733,21 @@ mod tests {
         assert_eq!(tokens[4], "X");
     }
 
+    #[test]
+    fn tokenize_rel_literal() {
+        let mut tokens: Vec<String> = Vec::new();
+
+        tokenize("BNE *+4", &mut tokens);
+
+        let res: Vec<String> = vec![
+            "BNE".to_string(), "*".to_string(), "+".to_string(), "4".to_string()
+        ];
+
+        assert_eq!(tokens, res)
+    }
+
+
+
     // Individual instruction parsing
 
     #[test]
@@ -825,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn lda_x_indirect() {
+    fn lda_indirect_x() {
         let mut data: Vec<u8> = Vec::with_capacity(2);
 
         parse_line("LDA ($05,X)", &mut data).unwrap();
@@ -848,40 +847,50 @@ mod tests {
         assert_eq!(data[1], 0x10);
     }
 
+    #[test]
+    fn bne_relative_hex() {
+        let mut data: Vec<u8> = Vec::new();
+
+        parse_line("BNE $34", &mut data).unwrap();
+
+        assert_eq!(data[0], 0xD0);
+        assert_eq!(data[1], 0x34);
+    }
+
     // Multiline parsing
 
     #[test]
-    fn multi_adc() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+    fn multiline_adc() {
+        let data = assemble_from_str("
+            ADC #$C4
+            ADC #$1F
+        ");
+        
+        let hex: Vec<u8> = vec![
+            0x69, 0xC4,
+            0x69, 0x1F
+        ];
 
-        let src = "ADC #$c4 
-                                    ADC #$1f";
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
-
-        assert_eq!(data.len(), 4);
-
-        assert_eq!(data[0], 0x69);
-        assert_eq!(data[1], 0xc4);
-        assert_eq!(data[2], 0x69);
-        assert_eq!(data[3], 0x1f);
+        assert_eq!(data, hex);
     }
+
+    #[test]
+    fn multiline_long() {
+        
+    }
+
 
     // Label testing
 
     #[test]
     fn dummy_label_1() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+        let src = "
+            BEGIN ADC #$c4 
+            ADC #$1f
+        ";
 
-        let src = "BEGIN ADC #$c4 
-            ADC #$1f";
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
-
+        let data = assemble_from_str(src);
+        
         assert_eq!(data.len(), 4);
 
         assert_eq!(data[0], 0x69);
@@ -892,14 +901,12 @@ mod tests {
 
     #[test]
     fn dummy_label_2() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+        let src = "
+            LSR $4283
+            what ADC #$1f
+        "; // lowercase labels should also work
 
-        let src = "LSR $4283
-            what ADC #$1f"; // lowercase labels should also work
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
+        let data = assemble_from_str(src);
 
         assert_eq!(data.len(), 5);
 
@@ -911,16 +918,14 @@ mod tests {
     }
 
     #[test]
-    fn jmp_label_backward() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+    fn jmp_label_a_backward() {
+        let src = "
+            BEGIN LDA #$ff
+            ADC #$c4
+            JMP BEGIN
+        ";
 
-        let src = "BEGIN LDA #$ff
-    ADC #$c4
-    JMP BEGIN";
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
+        let data = assemble_from_str(src);
 
         assert_eq!(data.len(), 7);
 
@@ -934,16 +939,14 @@ mod tests {
     }
 
     #[test]
-    fn jmp_label_forward() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+    fn jmp_label_a_forward() {
+        let src = "
+            JMP END
+            ADC #$c4
+            END LDA #$FF
+        ";
 
-        let src = "JMP END
-    ADC #$c4
-    END LDA #$FF";
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
+        let data = assemble_from_str(src);
 
         assert_eq!(data.len(), 7);
 
@@ -957,15 +960,13 @@ mod tests {
     }
 
     #[test]
-    fn jmp_label_comments() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+    fn jmp_label_a_comments() {
+        let src = "
+            START LDA #$01 ; This is the start
+            JMP START
+        ";
 
-        let src = "START LDA #$01 ; This is the start
-        JMP START";
-
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
+        let data = assemble_from_str(src);
 
         assert_eq!(data.len(), 5);
 
@@ -977,8 +978,37 @@ mod tests {
     }
 
     #[test]
+    fn jmp_label_multiple() {
+        let src = "
+            LABEL1  LSR $AC82,X
+                    ADC #$11
+                    LDA ($05,X)
+                    JMP LABEL2
+                    LDA ($10),Y
+            LABEL2  ADC $1234
+                    LDX #$3F
+                    JMP LABEL1
+        ";
+
+        let data = assemble_from_str(src);
+
+        let hex: Vec<u8> = vec![
+            0x5E, 0x82, 0xAC,
+            0x69, 0x11,
+            0xA1, 0x05,
+            0x4C, 0x0C, 0x02,
+            0xB1, 0x10,
+            0x6D, 0x34, 0x12,
+            0xA2, 0x3F,
+            0x4C, 0x00, 0x02,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
     fn bne_label_relative() {
-        let mut data: Vec<u8> = Vec::with_capacity(20);
+        let mut data: Vec<u8> = Vec::new();
 
         let src = "
             ADC $1234
