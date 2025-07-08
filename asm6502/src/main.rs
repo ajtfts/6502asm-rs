@@ -1,6 +1,6 @@
+use asm6502::{Config, assemble_from_file};
 use std::error::Error;
 use std::{env, process};
-use asm6502::{Config, assemble_from_file};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();

@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 
@@ -8,7 +9,9 @@ use lazy_static::lazy_static;
 use anyhow::Result;
 use anyhow::bail;
 
+use regex::Matches;
 use regex::Regex;
+use std::iter::Map;
 
 lazy_static! {
     static ref OPCODES: HashMap<String, Vec<u8>> = {
@@ -400,8 +403,11 @@ lazy_static! {
 
         map
     };
-    static ref ONE_BYTE: Regex = Regex::new(r"^[0-9A-Fa-f]{2}$").unwrap();
-    static ref TWO_BYTE: Regex = Regex::new(r"^[0-9A-Fa-f]{4}$").unwrap();
+    static ref RE_TOKEN: Regex = Regex::new(r"((\w+)|;[^\n\r]*|[^\w\s])").unwrap();
+    static ref RE_WORD: Regex = Regex::new(r"\w+").unwrap();
+    static ref RE_HEX_ONE_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{2}$").unwrap();
+    static ref RE_HEX_TWO_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{4}$").unwrap();
+    static ref RE_COMMENT: Regex = Regex::new(r";[^\n\r]*").unwrap();
 }
 
 pub struct Config {
@@ -439,64 +445,18 @@ enum AddressMode {
     ZpgY, // zeropage, Y-indexed
 }
 
-fn tokenize(line: &str, tokens: &mut Vec<String>) {
-    let mut building = false;
-    let mut token_start = 0;
-    let mut token_end = 0;
-
-    for (i, c) in line.chars().enumerate() {
-        match c {
-            '#' | '$' | '(' | ')' | ',' | '*' | '+' | '-' => {
-                if token_end - token_start > 0 {
-                    tokens.push(line[token_start..token_end].to_string());
-                }
-                tokens.push(c.to_string());
-                building = false;
-                token_start = 0;
-                token_end = 0;
-                continue;
-            }
-            _ => {}
-        }
-        if !building {
-            match c {
-                x if x.is_whitespace() => continue,
-                ';' => break,
-                'X' | 'x' | 'Y' | 'y' => tokens.push(c.to_string()),
-                'A' | 'a' => {
-                    if tokens.len() == 1 {
-                        tokens.push("A".to_string());
-                    } else {
-                        building = true;
-                        token_start = i;
-                        token_end = token_start + 1;
-                    }
-                }
-                _ => {
-                    building = true;
-                    token_start = i;
-                    token_end = token_start + 1;
-                }
-            }
-        } else {
-            if c.is_whitespace() {
-                tokens.push(line[token_start..token_end].to_string());
-                building = false;
-                token_start = 0;
-                token_end = 0;
-            } else {
-                token_end += 1;
-            }
-        }
-    }
-
-    if token_end - token_start > 0 {
-        tokens.push(line[token_start..token_end].to_string());
-    }
+struct Instruction {
+    name: String,
+    mode: AddressMode,
+    operand: Vec<u8>, // zero, one or two item u8 vec
 }
 
-fn parse_line(line: &str, buf: &mut Vec<u8>) -> Result<()> {
-    let mut tokens: Vec<String> = Vec::new();
+fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
+    RE_TOKEN.find_iter(src).into_iter().map(|m| m.as_str())
+}
+
+/*fn assemble(line: &str) -> Result<()> {
+    /*let mut tokens: Vec<String> = Vec::new();
 
     tokenize(line, &mut tokens);
 
@@ -606,72 +566,204 @@ fn parse_line(line: &str, buf: &mut Vec<u8>) -> Result<()> {
             buf.push(low);
         }
         _ => {}
-    }
+    }*/
 
     Ok(())
 }
+    */
 
-fn parse_lines<I>(lines: I, buf: &mut Vec<u8>) -> Result<()>
-where
-    I: IntoIterator,
-    I::Item: Borrow<str>,
-{
-    for line in lines {
-        if let Err(e) = parse_line(line.borrow(), buf) {
-            panic!("Invalid assembly syntax: {}", e);
+pub fn assemble(src: &str) -> Result<Vec<u8>> {
+    let mut data: Vec<u8> = vec![];
+    
+    let mut labels: HashMap<String, u16> = HashMap::new();
+    let mut cur_address = 0x0000; // TODO: allow for this to be set by directive at beginning of src
+
+    for (line_num, line) in src.lines().enumerate() {
+        let mut tokens: VecDeque<&str> = tokenize(line).collect();
+
+        // remove comments from end of line
+        if !tokens.is_empty() && RE_COMMENT.is_match(&tokens[tokens.len() - 1]) {
+            tokens.pop_back();
+        }
+
+        // pop labels
+        while tokens.len() > 0 && !OPCODES.contains_key(&tokens[0].to_uppercase()) {
+            if RE_WORD.is_match(&tokens[0]) {
+                labels.insert(String::from(tokens.pop_front().unwrap()), cur_address);
+            }
+            else {
+                bail!("Failed to parse line {}: {}", line_num, line);
+            }
+        }
+
+        // line could potentially just be labels/comments
+        if tokens.is_empty() {
+            continue;
+        }
+
+        // after removing labels/comments first token should always be the instruction name
+        if !OPCODES.contains_key(&tokens[0].to_uppercase()) {
+            bail!("Unrecognized opcode on line {}: {}", line_num, line);
+        }
+
+
+        let mut inst = Instruction {
+            name: String::from(&tokens[0].to_uppercase()),
+            mode: AddressMode::Imp,
+            operand: vec![],
+        };
+
+
+        match tokens.len() {
+            0 => continue,
+            1 => { /* taken care of by default value for inst */ },
+            2 => {
+                if tokens[1].to_uppercase() == "A" {
+                    inst.mode = AddressMode::A;
+                }
+                else {
+                    bail!("Failed to determine addressing mode (line {}): {}", line_num, line);
+                }
+            },
+            3 => {
+                if tokens[1] == "$" {
+                    inst.operand = hex::decode(tokens[2]).unwrap();
+                    if RE_HEX_ONE_BYTE.is_match(&tokens[2][..]) {
+                        inst.mode = match &tokens[0][..] {
+                            "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => AddressMode::Rel,
+                            _ => AddressMode::Zpg,
+                        }
+                    }
+                    else if RE_HEX_TWO_BYTE.is_match(&tokens[2][..]) {
+                        inst.mode = AddressMode::Abs;
+                    }
+                    else {
+                        bail!("Could not determine addressing mode (line {}): {}", line_num, line);
+                    }
+                }
+            },
+            4 => {
+                if tokens[1] == "#" {
+                    if RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
+                        inst.operand = hex::decode(tokens[3]).unwrap();
+                        inst.mode = AddressMode::Imm;
+                    }
+                    else {
+                        bail!("Could not determine addressing mode (line {}): {}", line_num, line);
+                    }
+                }
+            },
+            5 => {
+                if tokens[1] == "$" && tokens[3] == "," {
+                    inst.operand = hex::decode(tokens[2]).unwrap();
+                    if RE_HEX_ONE_BYTE.is_match(&tokens[2]) {
+                        match &tokens[4][..] {
+                            "X" => inst.mode = AddressMode::ZpgX,
+                            "Y" => inst.mode = AddressMode::ZpgY,
+                            _ => bail!("Could not determine_addressing mode (line {}): {}", line_num, line)
+                        }
+                    }
+                    else if RE_HEX_TWO_BYTE.is_match(&tokens[2]) {
+                        match &tokens[4][..] {
+                            "X" => inst.mode = AddressMode::AbsX,
+                            "Y" => inst.mode = AddressMode::AbsY,
+                            _ => bail!("Could not determine addressing mode (line {}): {}", line_num, line)
+                        }
+                    }
+                    else {
+                        bail!("Could not determine addressing mode (line {}): {}", line_num, line); 
+                    }
+                }
+            },
+            /*5 => {
+            if tokens[1] == "$" && tokens[3] == "," {
+                if ONE_BYTE.is_match(&tokens[2][..]) {
+                    match &tokens[4][..] {
+                        "X" => mode = AddressMode::ZpgX,
+                        "Y" => mode = AddressMode::ZpgY,
+                        _ => bail!("Could not determine addressing mode: {}", line),
+                    }
+                } else if TWO_BYTE.is_match(&tokens[2][..]) {
+                    match &tokens[4][..] {
+                        "X" => mode = AddressMode::AbsX,
+                        "Y" => mode = AddressMode::AbsY,
+                        _ => bail!("Could not determine addressing mode: {}", line),
+                    }
+                } else {
+                    bail!("Could not determine addressing mode: {}", line);
+                }
+            } else if tokens[1] == "("
+                && tokens[2] == "$"
+                && TWO_BYTE.is_match(&tokens[3][..])
+                && tokens[4] == ")"
+            {
+                mode = AddressMode::Ind;
+            } else {
+                bail!("Could not determine addressing mode: {}", line);
+            }
+        }*/
+            _ => bail!("Failed to parse line {}: {}", line_num, line)
+        }
+
+        let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+        data.push(opcode);
+        cur_address += 1;
+
+        match inst.operand.len() {
+            0 => {},
+            1 => {
+                let low = inst.operand[0];
+                data.push(low);
+                cur_address += 1;
+            },
+            2 => {
+                let low = inst.operand[0];
+                let high = inst.operand[1];
+                data.push(high); // big-endian...?
+                data.push(low);
+                cur_address += 2;
+            },
+            _ => bail!("Invalid operand (change this)")
         }
     }
 
-    Ok(())
+    Ok(data)
 }
 
-pub fn assemble_from_str(src: &'static str) -> Vec<u8> {
-    let mut data: Vec<u8> = Vec::new();
-    if let Err(e) = parse_lines(src.lines(), &mut data) {
-        panic!("{}", e);
-    }
-    data
-}
-
-pub fn assemble_from_file(config: Config) -> Result<()> {
+pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
     let input_file = File::open(config.input)?;
     let b = io::BufReader::new(input_file);
 
-    let mut data: Vec<u8> = Vec::new();
+    /*
 
-    if let Err(e) = parse_lines(b.lines().map(|l| l.expect("Invalid line")), &mut data) {
-        panic!("{}", e);
-    }
+        let mut data: Vec<u8> = Vec::new();
 
-    let mut output = File::create(config.output)?;
-    output.write_all(&data[..])?;
+        if let Err(e) = parse_lines(b.lines().map(|l| l.expect("Invalid line")), &mut data) {
+            panic!("{}", e);
+        }
 
-    Ok(())
+        let mut output = File::create(config.output)?;
+        output.write_all(&data[..])?;
+    */
+    todo!("Finish assemble from &str first");
 }
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // Tokenization
     #[test]
     fn tokenize_imp() {
-        let mut tokens: Vec<String> = Vec::with_capacity(1);
-
-        tokenize("BRK", &mut tokens);
+        let tokens: Vec<_> = tokenize("BRK").collect();
 
         assert_eq!(tokens.len(), 1);
-
         assert_eq!(tokens[0], "BRK");
     }
 
     #[test]
     fn tokenize_acc() {
-        let mut tokens: Vec<String> = Vec::with_capacity(1);
-
-        tokenize("LSR A", &mut tokens);
+        let tokens: Vec<_> = tokenize("LSR A").collect();
 
         assert_eq!(tokens.len(), 2);
 
@@ -681,14 +773,10 @@ mod tests {
 
     #[test]
     fn tokenize_acc_1() {
-        let mut tokens: Vec<String> = Vec::with_capacity(1);
+        let src = "LSR A;here's a comment! awfully close there...";
+        let tokens: Vec<_> = tokenize(src).collect();
 
-        tokenize(
-            "LSR A;here's a comment! awfully close there...",
-            &mut tokens,
-        );
-
-        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens.len(), 3);
 
         assert_eq!(tokens[0], "LSR");
         assert_eq!(tokens[1], "A");
@@ -696,9 +784,8 @@ mod tests {
 
     #[test]
     fn tokenize_abs() {
-        let mut tokens: Vec<String> = Vec::with_capacity(1);
-
-        tokenize("LDA $3c1d", &mut tokens);
+        let src = "LDA $3c1d";
+        let tokens: Vec<_> = tokenize(src).collect();
 
         assert_eq!(tokens.len(), 3);
 
@@ -709,20 +796,18 @@ mod tests {
 
     #[test]
     fn tokenize_comment_0() {
-        let mut tokens: Vec<String> = Vec::with_capacity(1);
+        let src = "BRK ;    here's a comment";
+        let tokens: Vec<_> = tokenize(src).collect();
 
-        tokenize("BRK ;here's a comment!", &mut tokens);
-
-        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.len(), 2);
 
         assert_eq!(tokens[0], "BRK");
     }
 
     #[test]
     fn tokenize_zp_x() {
-        let mut tokens: Vec<String> = Vec::with_capacity(5);
-
-        tokenize("LSR $01,X", &mut tokens);
+        let src = "LSR $01,X";
+        let tokens: Vec<_> = tokenize(src).collect();
 
         assert_eq!(tokens.len(), 5);
 
@@ -733,28 +818,11 @@ mod tests {
         assert_eq!(tokens[4], "X");
     }
 
-    #[test]
-    fn tokenize_rel_literal() {
-        let mut tokens: Vec<String> = Vec::new();
-
-        tokenize("BNE *+4", &mut tokens);
-
-        let res: Vec<String> = vec![
-            "BNE".to_string(), "*".to_string(), "+".to_string(), "4".to_string()
-        ];
-
-        assert_eq!(tokens, res)
-    }
-
-
-
     // Individual instruction parsing
 
     #[test]
     fn lsr_a() {
-        let mut data: Vec<u8> = Vec::with_capacity(1);
-
-        parse_line("LSR A", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LSR A").unwrap();
 
         assert_eq!(data.len(), 1);
 
@@ -763,9 +831,7 @@ mod tests {
 
     #[test]
     fn lsr_abs() {
-        let mut data: Vec<u8> = Vec::with_capacity(3);
-
-        parse_line("LSR $4283", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LSR $4283").unwrap();
 
         assert_eq!(data.len(), 3);
 
@@ -776,9 +842,7 @@ mod tests {
 
     #[test]
     fn lsr_abs_x() {
-        let mut data: Vec<u8> = Vec::with_capacity(3);
-
-        parse_line("LSR $AC82,X", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LSR $AC82,X").unwrap();
 
         assert_eq!(data.len(), 3);
 
@@ -789,9 +853,7 @@ mod tests {
 
     #[test]
     fn lsr_zp() {
-        let mut data: Vec<u8> = Vec::with_capacity(2);
-
-        parse_line("LSR $af", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LSR $af").unwrap();
 
         assert_eq!(data.len(), 2);
 
@@ -801,9 +863,7 @@ mod tests {
 
     #[test]
     fn lsr_zp_x() {
-        let mut data: Vec<u8> = Vec::with_capacity(2);
-
-        parse_line("LSR $01,X", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LSR $01,X").unwrap();
 
         assert_eq!(data.len(), 2);
 
@@ -813,9 +873,7 @@ mod tests {
 
     #[test]
     fn adc_i() {
-        let mut data: Vec<u8> = Vec::with_capacity(2);
-
-        parse_line("ADC #$c4", &mut data).unwrap();
+        let data: Vec<u8> = assemble("ADC #$c4").unwrap();
 
         assert_eq!(data.len(), 2);
 
@@ -825,9 +883,7 @@ mod tests {
 
     #[test]
     fn lda_indirect_x() {
-        let mut data: Vec<u8> = Vec::with_capacity(2);
-
-        parse_line("LDA ($05,X)", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LDA ($05,X)").unwrap();
 
         assert_eq!(data.len(), 2);
 
@@ -837,9 +893,7 @@ mod tests {
 
     #[test]
     fn lda_indirect_y() {
-        let mut data: Vec<u8> = Vec::with_capacity(2);
-
-        parse_line("LDA ($10),Y", &mut data).unwrap();
+        let data: Vec<u8> = assemble("LDA ($10),Y").unwrap();
 
         assert_eq!(data.len(), 2);
 
@@ -849,9 +903,7 @@ mod tests {
 
     #[test]
     fn bne_relative_hex() {
-        let mut data: Vec<u8> = Vec::new();
-
-        parse_line("BNE $34", &mut data).unwrap();
+        let data: Vec<u8> = assemble("BNE $34").unwrap();
 
         assert_eq!(data[0], 0xD0);
         assert_eq!(data[1], 0x34);
@@ -861,24 +913,21 @@ mod tests {
 
     #[test]
     fn multiline_adc() {
-        let data = assemble_from_str("
+        let data: Vec<u8> = assemble(
+            "
             ADC #$C4
             ADC #$1F
-        ");
-        
-        let hex: Vec<u8> = vec![
-            0x69, 0xC4,
-            0x69, 0x1F
-        ];
+        ",
+        )
+        .unwrap();
+
+        let hex: Vec<u8> = vec![0x69, 0xC4, 0x69, 0x1F];
 
         assert_eq!(data, hex);
     }
 
     #[test]
-    fn multiline_long() {
-        
-    }
-
+    fn multiline_long() {}
 
     // Label testing
 
@@ -889,8 +938,8 @@ mod tests {
             ADC #$1f
         ";
 
-        let data = assemble_from_str(src);
-        
+        let data: Vec<u8> = assemble(src).unwrap();
+
         assert_eq!(data.len(), 4);
 
         assert_eq!(data[0], 0x69);
@@ -906,7 +955,7 @@ mod tests {
             what ADC #$1f
         "; // lowercase labels should also work
 
-        let data = assemble_from_str(src);
+        let data: Vec<u8> = assemble(src).unwrap();
 
         assert_eq!(data.len(), 5);
 
@@ -925,7 +974,7 @@ mod tests {
             JMP BEGIN
         ";
 
-        let data = assemble_from_str(src);
+        let data: Vec<u8> = assemble(src).unwrap();
 
         assert_eq!(data.len(), 7);
 
@@ -946,7 +995,7 @@ mod tests {
             END LDA #$FF
         ";
 
-        let data = assemble_from_str(src);
+        let data: Vec<u8> = assemble(src).unwrap();
 
         assert_eq!(data.len(), 7);
 
@@ -966,7 +1015,7 @@ mod tests {
             JMP START
         ";
 
-        let data = assemble_from_str(src);
+        let data: Vec<u8> = assemble(src).unwrap();
 
         assert_eq!(data.len(), 5);
 
@@ -990,17 +1039,11 @@ mod tests {
                     JMP LABEL1
         ";
 
-        let data = assemble_from_str(src);
+        let data: Vec<u8> = assemble(src).unwrap();
 
         let hex: Vec<u8> = vec![
-            0x5E, 0x82, 0xAC,
-            0x69, 0x11,
-            0xA1, 0x05,
-            0x4C, 0x0C, 0x02,
-            0xB1, 0x10,
-            0x6D, 0x34, 0x12,
-            0xA2, 0x3F,
-            0x4C, 0x00, 0x02,
+            0x5E, 0x82, 0xAC, 0x69, 0x11, 0xA1, 0x05, 0x4C, 0x0C, 0x02, 0xB1, 0x10, 0x6D, 0x34,
+            0x12, 0xA2, 0x3F, 0x4C, 0x00, 0x02,
         ];
 
         assert_eq!(data, hex);
@@ -1008,8 +1051,6 @@ mod tests {
 
     #[test]
     fn bne_label_relative() {
-        let mut data: Vec<u8> = Vec::new();
-
         let src = "
             ADC $1234
             BNE LABEL
@@ -1017,9 +1058,7 @@ mod tests {
             LABEL LDA #$08
         ";
 
-        if let Err(e) = parse_lines(src.lines(), &mut data) {
-            panic!("{}", e);
-        }
+        let data: Vec<u8> = assemble(src).unwrap();
 
         assert_eq!(data.len(), 10);
 

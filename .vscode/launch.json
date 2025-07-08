@@ -1,0 +1,120 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'asm6502'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=asm6502"
+                ],
+                "filter": {
+                    "name": "asm6502",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'asm6502'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=asm6502",
+                    "--package=asm6502"
+                ],
+                "filter": {
+                    "name": "asm6502",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'asm6502'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=asm6502",
+                    "--package=asm6502"
+                ],
+                "filter": {
+                    "name": "asm6502",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'emu6502'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=emu6502"
+                ],
+                "filter": {
+                    "name": "emu6502",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'emu6502'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=emu6502",
+                    "--package=emu6502"
+                ],
+                "filter": {
+                    "name": "emu6502",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'emu6502'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=emu6502",
+                    "--package=emu6502"
+                ],
+                "filter": {
+                    "name": "emu6502",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

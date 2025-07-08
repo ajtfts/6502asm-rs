@@ -365,6 +365,7 @@ impl<'a> CPU<'a> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -375,11 +376,11 @@ mod tests {
 
     #[test]
     fn lda_imm_acc() {
-        let prg: Vec<u8> = asm6502::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble(
             "
             LDA #$F1
         ",
-        );
+        ).unwrap();
 
         let mut ram: [u8; 2048] = [0; 2048];
         let mut cpu: CPU = CPU::new(&prg, &mut ram, NES_CONFIG);
@@ -390,14 +391,14 @@ mod tests {
 
     #[test]
     fn lda_imm_flag_neg() {
-        let prg: Vec<u8> = asm6502::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble(
             "
             LDA #$03
             LDA #$80
             LDA #$7F
             LDA #$FA
         ",
-        );
+        ).unwrap();
 
         let mut ram: [u8; 2048] = [0; 2048];
         let mut cpu: CPU = CPU::new(&prg, &mut ram, NES_CONFIG);
@@ -418,12 +419,12 @@ mod tests {
 
     #[test]
     fn adc_imm_acc() {
-        let prg: Vec<u8> = asm6502::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble(
             "
             ADC #$12
             ADC #$14
         ",
-        );
+        ).unwrap();
 
         let mut ram: [u8; 2048] = [0; 2048];
         let mut cpu: CPU = CPU::new(&prg, &mut ram, NES_CONFIG);
@@ -434,21 +435,21 @@ mod tests {
 
     #[test]
     fn adc_imm_flag() {
-        let prg: Vec<u8> = asm6502::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble(
             "
             
         ",
-        );
+        ).unwrap();
     }
 
     #[test]
     fn sta_a() {
-        let prg: Vec<u8> = asm6502::assemble_from_str(
+        let prg: Vec<u8> = asm6502::assemble(
             "
             ADC #$89
             STA $0200
         ",
-        );
+        ).unwrap();
 
         let mut ram: [u8; 2048] = [0; 2048];
 
