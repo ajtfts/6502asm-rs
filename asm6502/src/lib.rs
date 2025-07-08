@@ -1,17 +1,14 @@
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write, Read};
 
 use lazy_static::lazy_static;
 
 use anyhow::Result;
 use anyhow::bail;
 
-use regex::Matches;
 use regex::Regex;
-use std::iter::Map;
 
 lazy_static! {
     static ref OPCODES: HashMap<String, Vec<u8>> = {
@@ -404,7 +401,7 @@ lazy_static! {
         map
     };
     static ref RE_TOKEN: Regex = Regex::new(r"((\w+)|;[^\n\r]*|[^\w\s])").unwrap();
-    static ref RE_WORD: Regex = Regex::new(r"\w+").unwrap();
+    static ref RE_WORD: Regex = Regex::new(r"^\w+$").unwrap();
     static ref RE_HEX_ONE_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{2}$").unwrap();
     static ref RE_HEX_TWO_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{4}$").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r";[^\n\r]*").unwrap();
@@ -448,133 +445,18 @@ enum AddressMode {
 struct Instruction {
     name: String,
     mode: AddressMode,
-    operand: Vec<u8>, // zero, one or two item u8 vec
+    operand: Vec<u8>,      // zero, one or two item u8 vec
+    label: Option<String>, // if the instruction references a label
 }
 
 fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
     RE_TOKEN.find_iter(src).into_iter().map(|m| m.as_str())
 }
 
-/*fn assemble(line: &str) -> Result<()> {
-    /*let mut tokens: Vec<String> = Vec::new();
-
-    tokenize(line, &mut tokens);
-
-    let mut mode: AddressMode = AddressMode::Imp;
-
-    match tokens.len() {
-        0 => return Ok(()),
-        1 => mode = AddressMode::Imp,
-        2 => {
-            if tokens[1] == "A" {
-                mode = AddressMode::A;
-            } else {
-                bail!("Could not determine addressing mode: {}", line);
-            }
-        }
-        3 => {
-            if tokens[1] == "$" {
-                if ONE_BYTE.is_match(&tokens[2][..]) {
-                    mode = match &tokens[0][..] {
-                        "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
-                            AddressMode::Rel
-                        }
-                        _ => AddressMode::Zpg,
-                    }
-                } else if TWO_BYTE.is_match(&tokens[2][..]) {
-                    mode = AddressMode::Abs;
-                } else {
-                    bail!("Could not determine addressing mode: {}", line);
-                }
-            } else {
-                bail!("Could not determine addressing mode: {}", line);
-            }
-        }
-        4 => {
-            if tokens[1] == "#" && tokens[2] == "$" {
-                if ONE_BYTE.is_match(&tokens[3][..]) {
-                    mode = AddressMode::Imm;
-                } else {
-                    bail!("Could not determine addressing mode: {}", line);
-                }
-            }
-        }
-        5 => {
-            if tokens[1] == "$" && tokens[3] == "," {
-                if ONE_BYTE.is_match(&tokens[2][..]) {
-                    match &tokens[4][..] {
-                        "X" => mode = AddressMode::ZpgX,
-                        "Y" => mode = AddressMode::ZpgY,
-                        _ => bail!("Could not determine addressing mode: {}", line),
-                    }
-                } else if TWO_BYTE.is_match(&tokens[2][..]) {
-                    match &tokens[4][..] {
-                        "X" => mode = AddressMode::AbsX,
-                        "Y" => mode = AddressMode::AbsY,
-                        _ => bail!("Could not determine addressing mode: {}", line),
-                    }
-                } else {
-                    bail!("Could not determine addressing mode: {}", line);
-                }
-            } else if tokens[1] == "("
-                && tokens[2] == "$"
-                && TWO_BYTE.is_match(&tokens[3][..])
-                && tokens[4] == ")"
-            {
-                mode = AddressMode::Ind;
-            } else {
-                bail!("Could not determine addressing mode: {}", line);
-            }
-        }
-        7 => {
-            if tokens[1] == "(" && tokens[2] == "$" && ONE_BYTE.is_match(&tokens[3][..]) {
-                if tokens[4] == "," && tokens[5] == "X" && tokens[6] == ")" {
-                    mode = AddressMode::XInd;
-                } else if tokens[4] == ")" && tokens[5] == "," && tokens[6] == "Y" {
-                    mode = AddressMode::IndY;
-                } else {
-                    bail!("Could not determine addressing mode: {}", line);
-                }
-            } else {
-                bail!("Could not determine addressing mode: {}", line);
-            }
-        }
-        _ => bail!("Could not determine addressing mode: {}", line),
-    }
-
-    if !OPCODES.contains_key(&tokens[0]) {
-        bail!("Unrecognized opcode: {}", tokens[0]);
-    }
-
-    let opcode = OPCODES.get(&tokens[0]).unwrap()[mode as usize];
-    buf.push(opcode);
-
-    match mode {
-        AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY => {
-            let raw = hex::decode(&tokens[2]).unwrap();
-            let low: u8 = raw[0];
-            let high: u8 = raw[1];
-            buf.push(high);
-            buf.push(low);
-        }
-        AddressMode::Imm | AddressMode::XInd | AddressMode::IndY => {
-            let low: u8 = hex::decode(&tokens[3]).unwrap()[0];
-            buf.push(low);
-        }
-        AddressMode::Rel | AddressMode::Zpg | AddressMode::ZpgX | AddressMode::ZpgY => {
-            let low: u8 = hex::decode(&tokens[2]).unwrap()[0];
-            buf.push(low);
-        }
-        _ => {}
-    }*/
-
-    Ok(())
-}
-    */
-
 pub fn assemble(src: &str) -> Result<Vec<u8>> {
     let mut data: Vec<u8> = vec![];
-    
+    let mut instructions: Vec<Instruction> = vec![];
+
     let mut labels: HashMap<String, u16> = HashMap::new();
     let mut cur_address = 0x0000; // TODO: allow for this to be set by directive at beginning of src
 
@@ -590,8 +472,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         while tokens.len() > 0 && !OPCODES.contains_key(&tokens[0].to_uppercase()) {
             if RE_WORD.is_match(&tokens[0]) {
                 labels.insert(String::from(tokens.pop_front().unwrap()), cur_address);
-            }
-            else {
+            } else {
                 bail!("Failed to parse line {}: {}", line_num, line);
             }
         }
@@ -606,25 +487,32 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             bail!("Unrecognized opcode on line {}: {}", line_num, line);
         }
 
-
         let mut inst = Instruction {
             name: String::from(&tokens[0].to_uppercase()),
             mode: AddressMode::Imp,
             operand: vec![],
+            label: None,
         };
 
-
+        // Determine addressing mode and operand
         match tokens.len() {
             0 => continue,
-            1 => { /* taken care of by default value for inst */ },
+            1 => { /* taken care of by default value for inst */ }
             2 => {
                 if tokens[1].to_uppercase() == "A" {
                     inst.mode = AddressMode::A;
+                } else if RE_WORD.is_match(&tokens[1]) {
+                    // label
+                    inst.mode = AddressMode::Abs;
+                    inst.label = Some(String::from(tokens[1]));
+                } else {
+                    bail!(
+                        "Failed to determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
                 }
-                else {
-                    bail!("Failed to determine addressing mode (line {}): {}", line_num, line);
-                }
-            },
+            }
             3 => {
                 if tokens[1] == "$" {
                     inst.operand = hex::decode(tokens[2]).unwrap();
@@ -633,24 +521,49 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                             "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => AddressMode::Rel,
                             _ => AddressMode::Zpg,
                         }
-                    }
-                    else if RE_HEX_TWO_BYTE.is_match(&tokens[2][..]) {
+                    } else if RE_HEX_TWO_BYTE.is_match(&tokens[2][..]) {
                         inst.mode = AddressMode::Abs;
+                    } else {
+                        bail!(
+                            "Could not determine addressing mode (line {}): {}",
+                            line_num,
+                            line
+                        );
                     }
-                    else {
-                        bail!("Could not determine addressing mode (line {}): {}", line_num, line);
-                    }
+                } else {
+                    bail!(
+                        "could not determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
                 }
-            },
+            }
             4 => {
                 if tokens[1] == "#" {
-                    if RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
-                        inst.operand = hex::decode(tokens[3]).unwrap();
-                        inst.mode = AddressMode::Imm;
+                    if tokens[2] == "$" {
+                        if RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
+                            inst.operand = hex::decode(tokens[3]).unwrap();
+                            inst.mode = AddressMode::Imm;
+                        } else {
+                            bail!(
+                                "Could not determine addressing mode (line {}): {}",
+                                line_num,
+                                line
+                            );
+                        }
+                    } else {
+                        bail!(
+                            "Could not determine addressing mode (line {}): {}",
+                            line_num,
+                            line
+                        );
                     }
-                    else {
-                        bail!("Could not determine addressing mode (line {}): {}", line_num, line);
-                    }
+                } else {
+                    bail!(
+                        "Could not determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
                 }
             },
             5 => {
@@ -660,70 +573,96 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                         match &tokens[4][..] {
                             "X" => inst.mode = AddressMode::ZpgX,
                             "Y" => inst.mode = AddressMode::ZpgY,
-                            _ => bail!("Could not determine_addressing mode (line {}): {}", line_num, line)
+                            _ => bail!(
+                                "Could not determine_addressing mode (line {}): {}",
+                                line_num,
+                                line
+                            ),
                         }
-                    }
-                    else if RE_HEX_TWO_BYTE.is_match(&tokens[2]) {
+                    } else if RE_HEX_TWO_BYTE.is_match(&tokens[2]) {
                         match &tokens[4][..] {
                             "X" => inst.mode = AddressMode::AbsX,
                             "Y" => inst.mode = AddressMode::AbsY,
-                            _ => bail!("Could not determine addressing mode (line {}): {}", line_num, line)
+                            _ => bail!(
+                                "Could not determine addressing mode (line {}): {}",
+                                line_num,
+                                line
+                            ),
                         }
+                    } else {
+                        bail!(
+                            "Could not determine addressing mode (line {}): {}",
+                            line_num,
+                            line
+                        );
                     }
-                    else {
-                        bail!("Could not determine addressing mode (line {}): {}", line_num, line); 
-                    }
+                } else if tokens[1] == "("
+                    && tokens[2] == "$"
+                    && RE_HEX_TWO_BYTE.is_match(&tokens[1])
+                    && tokens[4] == ")" 
+                {
+                    inst.operand = hex::decode(tokens[1]).unwrap();
+                    inst.mode = AddressMode::Ind;
+                } else {
+                    bail!(
+                        "Could not determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
                 }
             },
-            /*5 => {
-            if tokens[1] == "$" && tokens[3] == "," {
-                if ONE_BYTE.is_match(&tokens[2][..]) {
-                    match &tokens[4][..] {
-                        "X" => mode = AddressMode::ZpgX,
-                        "Y" => mode = AddressMode::ZpgY,
-                        _ => bail!("Could not determine addressing mode: {}", line),
-                    }
-                } else if TWO_BYTE.is_match(&tokens[2][..]) {
-                    match &tokens[4][..] {
-                        "X" => mode = AddressMode::AbsX,
-                        "Y" => mode = AddressMode::AbsY,
-                        _ => bail!("Could not determine addressing mode: {}", line),
+            7 => {
+                if tokens[1] == "(" && tokens[2] == "$" && RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
+                    inst.operand = hex::decode(tokens[3]).unwrap();
+                    if tokens[4] == "," && tokens[5] == "X" && tokens[6] == ")" {
+                        inst.mode = AddressMode::XInd;
+                    } else if tokens[4] == ")" && tokens[5] == "," && tokens[6] == "Y" {
+                        inst.mode = AddressMode::IndY;
+                    } else {
+                        bail!(
+                            "Could not determine addressing mode (line {}): {}",
+                            line_num,
+                            line
+                        );
                     }
                 } else {
-                    bail!("Could not determine addressing mode: {}", line);
+                    bail!(
+                        "Could not determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
                 }
-            } else if tokens[1] == "("
-                && tokens[2] == "$"
-                && TWO_BYTE.is_match(&tokens[3][..])
-                && tokens[4] == ")"
-            {
-                mode = AddressMode::Ind;
-            } else {
-                bail!("Could not determine addressing mode: {}", line);
-            }
-        }*/
-            _ => bail!("Failed to parse line {}: {}", line_num, line)
+            },
+            _ => bail!("Failed to parse line {}: {}", line_num, line),
         }
 
+        cur_address += 1;
+        cur_address += match inst.mode {
+            AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY 
+            | AddressMode::Ind => 2,
+            AddressMode::Zpg | AddressMode::ZpgX | AddressMode::ZpgY
+            | AddressMode::Imm | AddressMode::XInd | AddressMode::IndY => 1,
+            _ => 0,
+        };
+
+        instructions.push(inst);
+    }
+
+    for mut inst in instructions {
         let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
         data.push(opcode);
-        cur_address += 1;
 
-        match inst.operand.len() {
-            0 => {},
-            1 => {
-                let low = inst.operand[0];
-                data.push(low);
-                cur_address += 1;
-            },
-            2 => {
-                let low = inst.operand[0];
-                let high = inst.operand[1];
-                data.push(high); // big-endian...?
-                data.push(low);
-                cur_address += 2;
-            },
-            _ => bail!("Invalid operand (change this)")
+        if let Some(l) = inst.label {
+            if let Some(addr) = labels.get(&l) {
+                inst.operand = vec![(addr / 16) as u8, (addr % 16) as u8];
+            }
+            else {
+                bail!("Unrecognized label: {}", l);
+            }
+        }
+
+        for byte in inst.operand.into_iter().rev() {
+            data.push(byte);
         }
     }
 
@@ -732,20 +671,23 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
 
 pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
     let input_file = File::open(config.input)?;
-    let b = io::BufReader::new(input_file);
+    let mut b = io::BufReader::new(input_file);
 
-    /*
+    let mut src: String = String::new();
 
-        let mut data: Vec<u8> = Vec::new();
-
-        if let Err(e) = parse_lines(b.lines().map(|l| l.expect("Invalid line")), &mut data) {
-            panic!("{}", e);
-        }
-
-        let mut output = File::create(config.output)?;
-        output.write_all(&data[..])?;
-    */
-    todo!("Finish assemble from &str first");
+    if let Err(e) = b.read_to_string(&mut src) {
+        bail!(e);
+    }
+    
+    match assemble(&src) {
+        Ok(data) => {
+            let mut output_file = File::create(config.output)?;
+            output_file.write_all(&data[..])?;
+            
+            Ok(data)
+        },
+        Err(e) => bail!(e)
+    }
 }
 
 #[cfg(test)]
@@ -1042,8 +984,14 @@ mod tests {
         let data: Vec<u8> = assemble(src).unwrap();
 
         let hex: Vec<u8> = vec![
-            0x5E, 0x82, 0xAC, 0x69, 0x11, 0xA1, 0x05, 0x4C, 0x0C, 0x02, 0xB1, 0x10, 0x6D, 0x34,
-            0x12, 0xA2, 0x3F, 0x4C, 0x00, 0x02,
+            0x5E, 0x82, 0xAC, 
+            0x69, 0x11, 
+            0xA1, 0x05, 
+            0x4C, 0x0C, 0x00,
+            0xB1, 0x10,
+            0x6D, 0x34, 0x12,
+            0xA2, 0x3F,
+            0x4C, 0x00, 0x00,
         ];
 
         assert_eq!(data, hex);
