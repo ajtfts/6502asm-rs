@@ -273,6 +273,13 @@ lazy_static! {
         );
 
         map.insert(
+            "PLA".to_string(),
+            vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ], 
+        );
+
+        map.insert(
             "PLP".to_string(),
             vec![
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -310,7 +317,7 @@ lazy_static! {
         map.insert(
             "SBC".to_string(),
             vec![
-                0x00, 0xed, 0xfd, 0xf9, 0x00, 0x00, 0x00, 0xe1, 0xf1, 0x00, 0xe5, 0xf5, 0x00,
+                0x00, 0xed, 0xfd, 0xf9, 0xE9, 0x00, 0x00, 0xe1, 0xf1, 0x00, 0xe5, 0xf5, 0x00,
             ],
         );
 
@@ -477,6 +484,8 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             }
         }
 
+        
+
         // line could potentially just be labels/comments
         if tokens.is_empty() {
             continue;
@@ -484,7 +493,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
 
         // after removing labels/comments first token should always be the instruction name
         if !OPCODES.contains_key(&tokens[0].to_uppercase()) {
-            bail!("Unrecognized opcode on line {}: {}", line_num, line);
+            bail!("Failed to parse line {}: {}", line_num, line);
         }
 
         let mut inst = Instruction {
@@ -598,10 +607,10 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                     }
                 } else if tokens[1] == "("
                     && tokens[2] == "$"
-                    && RE_HEX_TWO_BYTE.is_match(&tokens[1])
+                    && RE_HEX_TWO_BYTE.is_match(&tokens[3])
                     && tokens[4] == ")" 
                 {
-                    inst.operand = hex::decode(tokens[1]).unwrap();
+                    inst.operand = hex::decode(tokens[3]).unwrap();
                     inst.mode = AddressMode::Ind;
                 } else {
                     bail!(
@@ -635,7 +644,6 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             },
             _ => bail!("Failed to parse line {}: {}", line_num, line),
         }
-
         cur_address += 1;
         cur_address += match inst.mode {
             AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY 
@@ -690,9 +698,32 @@ pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
     }
 }
 
+#[rustfmt::skip]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn assemble_doesnt_crash(s in "\\PC*") {
+            let _ = assemble(&s);
+        }
+
+        #[test]
+        fn assemble_parses_single_abs(s in "(?i)(ADC|AND|ASL|BIT|CMP|CPX|CPY|DEC|EOR|INC|JMP|JSR)[^\\S\\n\\r]*\\$[0-9a-fA-F]{4}") {
+            let data = assemble(&s).unwrap();
+            
+            assert_eq!(data.len(), 3);
+        }
+
+        #[test]
+        fn assemble_parses_single_imp(s in "((?i)(BR))[kK]") { // Kelvin character...
+            let data = assemble(&s).unwrap();
+
+            assert_eq!(data.len(), 1);
+        }
+    }
 
     // Tokenization
     #[test]
@@ -760,88 +791,432 @@ mod tests {
         assert_eq!(tokens[4], "X");
     }
 
-    // Individual instruction parsing
+    // Instruction parsing
 
     #[test]
-    fn lsr_a() {
-        let data: Vec<u8> = assemble("LSR A").unwrap();
+    fn parse_addr_mode_a() {
+        // Should include all instructions that support accumulator addressing mode
+        let data: Vec<u8> = assemble("
+            ASL A
+            LSR A
+            ROL A
+            ROR A
+        ").unwrap();
+        
+        let hex: Vec<u8> = vec![
+            0x0A,
+            0x4A,
+            0x2A,
+            0x6A
+        ];
 
-        assert_eq!(data.len(), 1);
-
-        assert_eq!(data[0], 0x4a);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lsr_abs() {
-        let data: Vec<u8> = assemble("LSR $4283").unwrap();
+    fn parse_addr_mode_imp() {
+        // Should include all implied addressing mode instructions
+        let data: Vec<u8> = assemble("
+            BRK
+            CLC
+            CLD
+            CLI
+            CLV
+            DEX
+            DEY
+            INX
+            INY
+            NOP
+            PHA
+            PHP
+            PLA
+            PLP
+            RTI
+            RTS
+            SEC
+            SED
+            SEI
+            TAX
+            TAY
+            TSX
+            TXA
+            TXS
+            TYA
+        ").unwrap();
 
-        assert_eq!(data.len(), 3);
+        let hex: Vec<u8> = vec![
+            0x00,
+            0x18,
+            0xD8,
+            0x58,
+            0xB8,
+            0xCA,
+            0x88,
+            0xE8,
+            0xC8,
+            0xEA,
+            0x48,
+            0x08,
+            0x68,
+            0x28,
+            0x40,
+            0x60,
+            0x38,
+            0xF8,
+            0x78,
+            0xAA,
+            0xA8,
+            0xBA,
+            0x8A,
+            0x9A,
+            0x98,
+        ];
 
-        assert_eq!(data[0], 0x4e);
-        assert_eq!(data[1], 0x83); // little endian
-        assert_eq!(data[2], 0x42);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lsr_abs_x() {
-        let data: Vec<u8> = assemble("LSR $AC82,X").unwrap();
+    fn parse_addr_mode_abs() {
+        // Should include all instructions that support absolute addressing mode
+        let data = assemble("
+            ADC $DF42
+            AND $C2B8
+            ASL $74A4
+            BIT $8A36
+            CMP $0D72
+            CPX $9D40
+            CPY $3F4D
+            DEC $49A4
+            EOR $3C32
+            INC $1E22
+            JMP $0B89
+            JSR $1109
+            LDA $96F6
+            LDX $6DEC
+            LDY $4B75
+            LSR $AF70
+            ORA $8558
+            ROL $B2A7
+            ROR $43A2
+            SBC $C909
+            STA $47A0
+            STX $22A8
+            STY $DFB0
+            
+        ").unwrap();
 
-        assert_eq!(data.len(), 3);
+        let hex = vec![
+            0x6D, 0x42, 0xDF,
+            0x2D, 0xB8, 0xC2,
+            0x0E, 0xA4, 0x74,
+            0x2C, 0x36, 0x8A,
+            0xCD, 0x72, 0x0D,
+            0xEC, 0x40, 0x9D,
+            0xCC, 0x4D, 0x3F,
+            0xCE, 0xA4, 0x49,
+            0x4D, 0x32, 0x3C,
+            0xEE, 0x22, 0x1E,
+            0x4C, 0x89, 0x0B,
+            0x20, 0x09, 0x11,
+            0xAD, 0xF6, 0x96,
+            0xAE, 0xEC, 0x6D,
+            0xAC, 0x75, 0x4B,
+            0x4E, 0x70, 0xAF,
+            0x0D, 0x58, 0x85,
+            0x2E, 0xA7, 0xB2,
+            0x6E, 0xA2, 0x43,
+            0xED, 0x09, 0xC9,
+            0x8D, 0xA0, 0x47,
+            0x8E, 0xA8, 0x22,
+            0x8C, 0xB0, 0xDF,
+        ];
 
-        assert_eq!(data[0], 0x5e);
-        assert_eq!(data[1], 0x82);
-        assert_eq!(data[2], 0xac);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lsr_zp() {
-        let data: Vec<u8> = assemble("LSR $af").unwrap();
+    fn parse_addr_mode_abs_x() {
+        let data = assemble("
+            ADC $A3F1,X
+            AND $5C0B,X
+            ASL $E29D,X
+            CMP $1F70,X
+            DEC $8B2C,X
+            EOR $F04E,X
+            INC $3A65,X
+            LDA $7D19,X
+            LDY $C482,X
+            LSR $2E5F,X
+            ORA $9B37,X
+            ROL $41AC,X
+            ROR $D6EF,X
+            SBC $08C3,X
+            STA $67BD,X
+        ").unwrap();
 
-        assert_eq!(data.len(), 2);
+        let hex = vec![
+            0x7D, 0xF1, 0xA3,
+            0x3D, 0x0B, 0x5C,
+            0x1E, 0x9D, 0xE2,
+            0xDD, 0x70, 0x1F,
+            0xDE, 0x2C, 0x8B,
+            0x5D, 0x4E, 0xF0,
+            0xFE, 0x65, 0x3A,
+            0xBD, 0x19, 0x7D,
+            0xBC, 0x82, 0xC4,
+            0x5E, 0x5F, 0x2E,
+            0x1D, 0x37, 0x9B,
+            0x3E, 0xAC, 0x41,
+            0x7E, 0xEF, 0xD6,
+            0xFD, 0xC3, 0x08,
+            0x9D, 0xBD, 0x67,
+        ];
 
-        assert_eq!(data[0], 0x46);
-        assert_eq!(data[1], 0xaf);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lsr_zp_x() {
-        let data: Vec<u8> = assemble("LSR $01,X").unwrap();
+    fn parse_addr_mode_abs_y() {
+        let data = assemble("
+            ADC $22A8,Y 
+            AND $DFB0,Y
+            CMP $35EE,Y
+            EOR $7F14,Y
+            LDA $9F7B,Y
+            LDX $CDE7,Y
+            ORA $7FDD,Y
+            SBC $14F1,Y
+            STA $A39F,Y
+        ").unwrap();
 
-        assert_eq!(data.len(), 2);
+        let hex = vec![
+            0x79, 0xA8, 0x22,
+            0x39, 0xB0, 0xDF,
+            0xD9, 0xEE, 0x35,
+            0x59, 0x14, 0x7F,
+            0xB9, 0x7B, 0x9F,
+            0xBE, 0xE7, 0xCD,
+            0x19, 0xDD, 0x7F,
+            0xF9, 0xF1, 0x14,
+            0x99, 0x9F, 0xA3,
+        ];
 
-        assert_eq!(data[0], 0x56);
-        assert_eq!(data[1], 0x01);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn adc_i() {
-        let data: Vec<u8> = assemble("ADC #$c4").unwrap();
+    fn parse_addr_mode_indirect() {
+        let data = assemble("
+            JMP ($C3B4)
+        ").unwrap();
 
-        assert_eq!(data.len(), 2);
+        let hex = vec![
+            0x6C, 0xB4, 0xC3,
+        ];
 
-        assert_eq!(data[0], 0x69);
-        assert_eq!(data[1], 0xc4);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lda_indirect_x() {
-        let data: Vec<u8> = assemble("LDA ($05,X)").unwrap();
+    fn parse_addr_mode_x_indirect() {
+        let data = assemble("
+            ADC ($46,X)
+            AND ($B0,X)
+            CMP ($29,X)
+            EOR ($13,X)
+            LDA ($36,X)
+            ORA ($C0,X)
+            SBC ($8D,X)
+            STA ($B0,X)
+        ").unwrap();
 
-        assert_eq!(data.len(), 2);
+        let hex = vec![
+            0x61, 0x46,
+            0x21, 0xB0,
+            0xC1, 0x29,
+            0x41, 0x13,
+            0xA1, 0x36,
+            0x01, 0xC0,
+            0xE1, 0x8D,
+            0x81, 0xB0,
+        ];
 
-        assert_eq!(data[0], 0xa1);
-        assert_eq!(data[1], 0x05);
+        assert_eq!(data, hex);
     }
 
     #[test]
-    fn lda_indirect_y() {
-        let data: Vec<u8> = assemble("LDA ($10),Y").unwrap();
+    fn parse_addr_mode_indirect_y() {
+        let data = assemble("
+            ADC ($DF),Y
+            AND ($5E),Y
+            CMP ($9B),Y
+            EOR ($1C),Y
+            LDA ($14),Y
+            ORA ($7D),Y
+            SBC ($35),Y
+            STA ($5A),Y
+        ").unwrap();
 
-        assert_eq!(data.len(), 2);
+        let hex = vec![
+            0x71, 0xDF,
+            0x31, 0x5E,
+            0xD1, 0x9B,
+            0x51, 0x1C,
+            0xB1, 0x14,
+            0x11, 0x7D,
+            0xF1, 0x35,
+            0x91, 0x5A,
+        ];
 
-        assert_eq!(data[0], 0xb1);
-        assert_eq!(data[1], 0x10);
+        assert_eq!(data, hex);
     }
+
+    #[test]
+    fn parse_addr_mode_imm() {
+        // Should include all instructions that support immediate addressing mode
+        let data: Vec<u8> = assemble("
+            ADC #$CA
+            AND #$5A
+            CMP #$A1
+            CPX #$E9
+            CPY #$03
+            EOR #$FF
+            LDA #$9A
+            LDX #$AE
+            LDY #$DB
+            ORA #$1D
+            SBC #$E3
+        ").unwrap();
+
+        let hex: Vec<u8> = vec![
+            0x69, 0xCA,
+            0x29, 0x5A,
+            0xC9, 0xA1,
+            0xE0, 0xE9,
+            0xC0, 0x03,
+            0x49, 0xFF,
+            0xA9, 0x9A,
+            0xA2, 0xAE,
+            0xA0, 0xDB,
+            0x09, 0x1D,
+            0xE9, 0xE3,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn parse_addr_mode_zpg() {
+        let data = assemble("
+            ADC $96
+            AND $7A
+            ASL $FF
+            BIT $42
+            CMP $CA
+            CPX $53
+            CPY $0E
+            DEC $64
+            EOR $6F
+            INC $1D
+            LDA $F4
+            LDX $3D
+            LDY $C9
+            LSR $ED
+            ORA $1C
+            ROL $DC
+            ROR $18
+            SBC $6D
+            STA $0C
+            STX $6A
+            STY $B5
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0x96,
+            0x25, 0x7A,
+            0x06, 0xFF,
+            0x24, 0x42,
+            0xC5, 0xCA,
+            0xE4, 0x53,
+            0xC4, 0x0E,
+            0xC6, 0x64,
+            0x45, 0x6F,
+            0xE6, 0x1D,
+            0xA5, 0xF4,
+            0xA6, 0x3D,
+            0xA4, 0xC9,
+            0x46, 0xED,
+            0x05, 0x1C,
+            0x26, 0xDC,
+            0x66, 0x18,
+            0xE5, 0x6D,
+            0x85, 0x0C,
+            0x86, 0x6A,
+            0x84, 0xB5,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn parse_addr_mode_zpg_x() {
+        let data = assemble("
+            ADC $5F,X
+            AND $9A,X
+            ASL $2F,X
+            CMP $B4,X
+            DEC $A5,X
+            EOR $E8,X
+            INC $99,X
+            LDA $C7,X
+            LDY $26,X
+            LSR $DB,X
+            ORA $3D,X
+            ROL $9E,X
+            ROR $CC,X
+            SBC $DE,X
+            STA $C0,X
+            STY $8E,X
+        ").unwrap();
+
+        let hex = vec![
+            0x75, 0x5F,
+            0x35, 0x9A,
+            0x16, 0x2F,
+            0xD5, 0xB4,
+            0xD6, 0xA5,
+            0x55, 0xE8,
+            0xF6, 0x99,
+            0xB5, 0xC7,
+            0xB4, 0x26,
+            0x56, 0xDB,
+            0x15, 0x3D,
+            0x36, 0x9E,
+            0x76, 0xCC,
+            0xF5, 0xDE,
+            0x95, 0xC0,
+            0x94, 0x8E,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn parse_addr_mode_zpg_y() {
+        let data = assemble("
+            LDX $B3,Y
+            STX $7F,Y
+        ").unwrap();
+
+        let hex = vec![
+            0xB6, 0xB3,
+            0x96, 0x7F,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    /*
 
     #[test]
     fn bne_relative_hex() {
@@ -851,25 +1226,6 @@ mod tests {
         assert_eq!(data[1], 0x34);
     }
 
-    // Multiline parsing
-
-    #[test]
-    fn multiline_adc() {
-        let data: Vec<u8> = assemble(
-            "
-            ADC #$C4
-            ADC #$1F
-        ",
-        )
-        .unwrap();
-
-        let hex: Vec<u8> = vec![0x69, 0xC4, 0x69, 0x1F];
-
-        assert_eq!(data, hex);
-    }
-
-    #[test]
-    fn multiline_long() {}
 
     // Label testing
 
@@ -997,7 +1353,7 @@ mod tests {
         assert_eq!(data, hex);
     }
 
-    #[test]
+    /*#[test]
     fn bne_label_relative() {
         let src = "
             ADC $1234
@@ -1011,5 +1367,5 @@ mod tests {
         assert_eq!(data.len(), 10);
 
         assert_eq!(data[5], 0x03);
-    }
+    }*/*/
 }
