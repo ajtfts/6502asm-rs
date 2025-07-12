@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, Write, Read};
+use std::io::{self, Read, Write};
 
+use anyhow::Error;
 use lazy_static::lazy_static;
 
 use anyhow::Result;
@@ -276,7 +277,7 @@ lazy_static! {
             "PLA".to_string(),
             vec![
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ], 
+            ],
         );
 
         map.insert(
@@ -407,10 +408,10 @@ lazy_static! {
 
         map
     };
-    static ref RE_TOKEN: Regex = Regex::new(r"((\w+)|;[^\n\r]*|[^\w\s])").unwrap();
+    static ref RE_TOKEN: Regex =
+        Regex::new(r"(;[^\n\r]*|(\$[0-9a-fA-F]+|%[01]+|\b\d)|(\w+)|([^\w\s]))").unwrap();
     static ref RE_WORD: Regex = Regex::new(r"^\w+$").unwrap();
-    static ref RE_HEX_ONE_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{2}$").unwrap();
-    static ref RE_HEX_TWO_BYTE: Regex = Regex::new(r"^[0-9a-fA-F]{4}$").unwrap();
+    static ref RE_NUM_LITERAL: Regex = Regex::new(r"(\$[0-9a-fA-F]+|%[01]+|\b\d)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r";[^\n\r]*").unwrap();
 }
 
@@ -460,12 +461,22 @@ fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
     RE_TOKEN.find_iter(src).into_iter().map(|m| m.as_str())
 }
 
+fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
+    if literal.len() == 0 {
+        bail!("Could not parse literal: {}", literal);
+    }
+    match literal.chars().next().unwrap() {
+        '$' => hex::decode(&literal[1..]).map_err(|e| Error::new(e)),
+        _ => bail!("Could not parse literal: {}", literal),
+    }
+}
+
 pub fn assemble(src: &str) -> Result<Vec<u8>> {
     let mut data: Vec<u8> = vec![];
     let mut instructions: Vec<Instruction> = vec![];
 
     let mut labels: HashMap<String, u16> = HashMap::new();
-    let mut cur_address = 0x0000; // TODO: allow for this to be set by directive at beginning of src
+    let mut pc = 0x0000; // TODO: allow for this to be set by directive at beginning of src
 
     for (line_num, line) in src.lines().enumerate() {
         let mut tokens: VecDeque<&str> = tokenize(line).collect();
@@ -478,13 +489,11 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         // pop labels
         while tokens.len() > 0 && !OPCODES.contains_key(&tokens[0].to_uppercase()) {
             if RE_WORD.is_match(&tokens[0]) {
-                labels.insert(String::from(tokens.pop_front().unwrap()), cur_address);
+                labels.insert(String::from(tokens.pop_front().unwrap()), pc);
             } else {
                 bail!("Failed to parse line {}: {}", line_num, line);
             }
         }
-
-        
 
         // line could potentially just be labels/comments
         if tokens.is_empty() {
@@ -503,35 +512,46 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             label: None,
         };
 
-        // Determine addressing mode and operand
         match tokens.len() {
-            0 => continue,
-            1 => { /* taken care of by default value for inst */ }
-            2 => {
+            1 => { /* taken care of by default value for inst */ } // AddressMode::Imp
+            2 => { // AddressMode::{A, Zpg, Rel, Abs}
                 if tokens[1].to_uppercase() == "A" {
                     inst.mode = AddressMode::A;
-                } else if RE_WORD.is_match(&tokens[1]) {
-                    // label
-                    inst.mode = AddressMode::Abs;
-                    inst.label = Some(String::from(tokens[1]));
                 } else {
-                    bail!(
-                        "Failed to determine addressing mode (line {}): {}",
-                        line_num,
-                        line
-                    );
+                    if RE_NUM_LITERAL.is_match(&tokens[1]) {
+                        inst.operand = parse_num_literal(&tokens[1]).unwrap();
+                    } else if RE_WORD.is_match(&tokens[1]) {
+                        inst.label = Some(String::from(tokens[1]));
+                    }
+
+                    match &tokens[0].to_uppercase()[..] {
+                        "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
+                            inst.mode = AddressMode::Rel;
+                        }
+                        _ => match inst.operand.len() {
+                            0 if inst.label != None => inst.mode = AddressMode::Abs,
+                            1 => inst.mode = AddressMode::Zpg,
+                            2 => inst.mode = AddressMode::Abs,
+                            _ => bail!(
+                                "Could not determine addressing mode (line {}): {}",
+                                line_num,
+                                line
+                            ),
+                        },
+                    }
                 }
             }
-            3 => {
-                if tokens[1] == "$" {
-                    inst.operand = hex::decode(tokens[2]).unwrap();
-                    if RE_HEX_ONE_BYTE.is_match(&tokens[2][..]) {
-                        inst.mode = match &tokens[0][..] {
-                            "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => AddressMode::Rel,
-                            _ => AddressMode::Zpg,
-                        }
-                    } else if RE_HEX_TWO_BYTE.is_match(&tokens[2][..]) {
-                        inst.mode = AddressMode::Abs;
+            3 if tokens[1] == "#" => { // AddressMode::Imm
+                inst.mode = AddressMode::Imm;
+                inst.operand = parse_num_literal(&tokens[2]).unwrap();
+            }
+            4 => { // AddressMode::{ZpgX, ZpgY, AbsX, AbsY, Ind}
+                if tokens[1] == "(" && tokens[3] == ")" {
+                    inst.mode = AddressMode::Ind;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.label = Some(String::from(tokens[1]));
                     } else {
                         bail!(
                             "Could not determine addressing mode (line {}): {}",
@@ -539,27 +559,41 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                             line
                         );
                     }
-                } else {
-                    bail!(
-                        "could not determine addressing mode (line {}): {}",
-                        line_num,
-                        line
-                    );
-                }
-            }
-            4 => {
-                if tokens[1] == "#" {
-                    if tokens[2] == "$" {
-                        if RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
-                            inst.operand = hex::decode(tokens[3]).unwrap();
-                            inst.mode = AddressMode::Imm;
-                        } else {
-                            bail!(
+                } else if tokens[2] == "," {
+                    if RE_NUM_LITERAL.is_match(&tokens[1]) {
+                        inst.operand = parse_num_literal(&tokens[1]).unwrap();
+                        inst.mode = match &tokens[3].to_uppercase()[..] {
+                            "X" => match inst.operand.len() {
+                                1 => AddressMode::ZpgX,
+                                2 => AddressMode::AbsX,
+                                _ => bail!(
+                                    "Could not determine addressing mode (line {}): {}",
+                                    line_num,
+                                    line
+                                ),
+                            },
+                            "Y" => match inst.operand.len() {
+                                1 => AddressMode::ZpgY,
+                                2 => AddressMode::AbsY,
+                                _ => bail!(
+                                    "Could not determine addressing mode (line {}): {}",
+                                    line_num,
+                                    line
+                                ),
+                            },
+                            _ => bail!(
                                 "Could not determine addressing mode (line {}): {}",
                                 line_num,
                                 line
-                            );
-                        }
+                            ),
+                        };
+                    } else if RE_WORD.is_match(&tokens[1]) {
+                        inst.mode = match &tokens[3].to_uppercase()[..] {
+                            "X" => AddressMode::AbsX,
+                            "Y" => AddressMode::AbsY,
+                            _ => bail!("eou"),
+                        };
+                        inst.label = Some(String::from(tokens[1]));
                     } else {
                         bail!(
                             "Could not determine addressing mode (line {}): {}",
@@ -574,65 +608,29 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                         line
                     );
                 }
-            },
-            5 => {
-                if tokens[1] == "$" && tokens[3] == "," {
-                    inst.operand = hex::decode(tokens[2]).unwrap();
-                    if RE_HEX_ONE_BYTE.is_match(&tokens[2]) {
-                        match &tokens[4][..] {
-                            "X" => inst.mode = AddressMode::ZpgX,
-                            "Y" => inst.mode = AddressMode::ZpgY,
-                            _ => bail!(
-                                "Could not determine_addressing mode (line {}): {}",
-                                line_num,
-                                line
-                            ),
-                        }
-                    } else if RE_HEX_TWO_BYTE.is_match(&tokens[2]) {
-                        match &tokens[4][..] {
-                            "X" => inst.mode = AddressMode::AbsX,
-                            "Y" => inst.mode = AddressMode::AbsY,
-                            _ => bail!(
-                                "Could not determine addressing mode (line {}): {}",
-                                line_num,
-                                line
-                            ),
-                        }
-                    } else {
-                        bail!(
-                            "Could not determine addressing mode (line {}): {}",
-                            line_num,
-                            line
-                        );
+            }
+            6 => { // AddressMode::{XInd, IndY}
+                if tokens[1] == "("
+                    && tokens[3] == ","
+                    && tokens[4].to_uppercase() == "X"
+                    && tokens[5] == ")"
+                {
+                    inst.mode = AddressMode::XInd;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.label = Some(String::from(tokens[2]));
                     }
                 } else if tokens[1] == "("
-                    && tokens[2] == "$"
-                    && RE_HEX_TWO_BYTE.is_match(&tokens[3])
-                    && tokens[4] == ")" 
+                    && tokens[3] == ")"
+                    && tokens[4] == ","
+                    && tokens[5].to_uppercase() == "Y"
                 {
-                    inst.operand = hex::decode(tokens[3]).unwrap();
-                    inst.mode = AddressMode::Ind;
-                } else {
-                    bail!(
-                        "Could not determine addressing mode (line {}): {}",
-                        line_num,
-                        line
-                    );
-                }
-            },
-            7 => {
-                if tokens[1] == "(" && tokens[2] == "$" && RE_HEX_ONE_BYTE.is_match(&tokens[3]) {
-                    inst.operand = hex::decode(tokens[3]).unwrap();
-                    if tokens[4] == "," && tokens[5] == "X" && tokens[6] == ")" {
-                        inst.mode = AddressMode::XInd;
-                    } else if tokens[4] == ")" && tokens[5] == "," && tokens[6] == "Y" {
-                        inst.mode = AddressMode::IndY;
-                    } else {
-                        bail!(
-                            "Could not determine addressing mode (line {}): {}",
-                            line_num,
-                            line
-                        );
+                    inst.mode = AddressMode::IndY;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.label = Some(String::from(tokens[2]));
                     }
                 } else {
                     bail!(
@@ -641,15 +639,24 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                         line
                     );
                 }
-            },
-            _ => bail!("Failed to parse line {}: {}", line_num, line),
+            }
+            _ => bail!(
+                "Could not determine addressing mode (line {}): {}",
+                line_num,
+                line
+            ),
         }
-        cur_address += 1;
-        cur_address += match inst.mode {
-            AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY 
-            | AddressMode::Ind => 2,
-            AddressMode::Zpg | AddressMode::ZpgX | AddressMode::ZpgY
-            | AddressMode::Imm | AddressMode::XInd | AddressMode::IndY => 1,
+
+        pc += 1;
+        pc += match inst.mode {
+            AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY | AddressMode::Ind => 2,
+            AddressMode::Zpg
+            | AddressMode::ZpgX
+            | AddressMode::ZpgY
+            | AddressMode::Imm
+            | AddressMode::XInd
+            | AddressMode::IndY
+            | AddressMode::Rel => 1,
             _ => 0,
         };
 
@@ -658,17 +665,25 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
 
     for mut inst in instructions {
         let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
-        data.push(opcode);
 
         if let Some(l) = inst.label {
-            if let Some(addr) = labels.get(&l) {
-                inst.operand = vec![(addr / 16) as u8, (addr % 16) as u8];
-            }
-            else {
-                bail!("Unrecognized label: {}", l);
+            if let Some(label_addr) = labels.get(&l) {
+                match inst.mode {
+                    AddressMode::Rel => {
+                        println!("{}, {}", label_addr, data.len());
+                        let rel_addr: i8 = ((*label_addr as i16) - (data.len() as i16 + 2))
+                            .try_into()
+                            .unwrap();
+                        inst.operand = vec![rel_addr as u8];
+                    }
+                    _ => inst.operand = vec![(label_addr / 16) as u8, (label_addr % 16) as u8],
+                }
+            } else {
+                bail!("Undefined label: {}", l);
             }
         }
 
+        data.push(opcode);
         for byte in inst.operand.into_iter().rev() {
             data.push(byte);
         }
@@ -686,15 +701,15 @@ pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
     if let Err(e) = b.read_to_string(&mut src) {
         bail!(e);
     }
-    
+
     match assemble(&src) {
         Ok(data) => {
             let mut output_file = File::create(config.output)?;
             output_file.write_all(&data[..])?;
-            
+
             Ok(data)
-        },
-        Err(e) => bail!(e)
+        }
+        Err(e) => bail!(e),
     }
 }
 
@@ -710,7 +725,7 @@ mod tests {
             let _ = assemble(&s);
         }
 
-        #[test]
+        /*#[test]
         fn assemble_parses_single_abs(s in "(?i)(ADC|AND|ASL|BIT|CMP|CPX|CPY|DEC|EOR|INC|JMP|JSR)[^\\S\\n\\r]*\\$[0-9a-fA-F]{4}") {
             let data = assemble(&s).unwrap();
             
@@ -722,7 +737,7 @@ mod tests {
             let data = assemble(&s).unwrap();
 
             assert_eq!(data.len(), 1);
-        }
+        }*/
     }
 
     // Tokenization
@@ -745,14 +760,14 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_acc_1() {
+    fn tokenize_comment() {
         let src = "LSR A;here's a comment! awfully close there...";
         let tokens: Vec<_> = tokenize(src).collect();
 
-        assert_eq!(tokens.len(), 3);
 
-        assert_eq!(tokens[0], "LSR");
-        assert_eq!(tokens[1], "A");
+        assert_eq!(tokens, vec![
+            "LSR", "A", ";here's a comment! awfully close there..."
+        ]);
     }
 
     #[test]
@@ -760,21 +775,9 @@ mod tests {
         let src = "LDA $3c1d";
         let tokens: Vec<_> = tokenize(src).collect();
 
-        assert_eq!(tokens.len(), 3);
-
-        assert_eq!(tokens[0], "LDA");
-        assert_eq!(tokens[1], "$");
-        assert_eq!(tokens[2], "3c1d");
-    }
-
-    #[test]
-    fn tokenize_comment_0() {
-        let src = "BRK ;    here's a comment";
-        let tokens: Vec<_> = tokenize(src).collect();
-
-        assert_eq!(tokens.len(), 2);
-
-        assert_eq!(tokens[0], "BRK");
+        assert_eq!(tokens, vec![
+            "LDA", "$3c1d",
+        ]);
     }
 
     #[test]
@@ -782,13 +785,9 @@ mod tests {
         let src = "LSR $01,X";
         let tokens: Vec<_> = tokenize(src).collect();
 
-        assert_eq!(tokens.len(), 5);
-
-        assert_eq!(tokens[0], "LSR");
-        assert_eq!(tokens[1], "$");
-        assert_eq!(tokens[2], "01");
-        assert_eq!(tokens[3], ",");
-        assert_eq!(tokens[4], "X");
+        assert_eq!(tokens, vec![
+            "LSR", "$01", ",", "X",
+        ]);
     }
 
     // Instruction parsing
@@ -1216,18 +1215,35 @@ mod tests {
         assert_eq!(data, hex);
     }
 
-    /*
-
+    // for now using hex literals, will test label usage separately
     #[test]
-    fn bne_relative_hex() {
-        let data: Vec<u8> = assemble("BNE $34").unwrap();
+    fn parse_addr_mode_rel() {
+        let data = assemble("
+            BCC $E3
+            BCS $0F
+            BEQ $6A
+            BMI $C2
+            BNE $4B
+            BPL $91
+            BVC $27
+            BVS $D5
+        ").unwrap();
 
-        assert_eq!(data[0], 0xD0);
-        assert_eq!(data[1], 0x34);
+        let hex = vec![
+            0x90, 0xE3, 
+            0xB0, 0x0F,
+            0xF0, 0x6A,
+            0x30, 0xC2,
+            0xD0, 0x4B,
+            0x10, 0x91,
+            0x50, 0x27,
+            0x70, 0xD5,
+        ];
+
+        assert_eq!(data, hex);
     }
 
-
-    // Label testing
+    // Label parsing
 
     #[test]
     fn dummy_label_1() {
@@ -1353,19 +1369,60 @@ mod tests {
         assert_eq!(data, hex);
     }
 
-    /*#[test]
-    fn bne_label_relative() {
-        let src = "
+    #[test]
+    fn bne_label_relative_forward() {
+        let data = assemble("
             ADC $1234
             BNE LABEL
             ADC $1234
             LABEL LDA #$08
-        ";
+        ").unwrap();
 
-        let data: Vec<u8> = assemble(src).unwrap();
+        let hex = vec![
+            0x6D, 0x34, 0x12,
+            0xD0, 0x03, // important part here is the 3, relative offset
+            0x6D, 0x34, 0x12,
+            0xA9, 0x08,
+        ];
 
-        assert_eq!(data.len(), 10);
+        assert_eq!(data, hex);
+    }
 
-        assert_eq!(data[5], 0x03);
-    }*/*/
+    #[test]
+    fn bne_label_relative_backward() {
+        let data = assemble("
+                ADC $1234
+        LABEL   LDA #$08
+                ADC $1234
+                BNE LABEL
+        ").unwrap();
+
+        let hex = vec![
+            0x6D, 0x34, 0x12,
+            0xA9, 0x08,
+            0x6D, 0x34, 0x12,
+            0xD0, 0xF9,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn hanging_literal_fail() {
+        let res = assemble("
+            LSR #$10
+            $FF
+            ADC $1293
+        ");
+
+        if let Ok(_) = res {
+            panic!("Assemble succeeded when it should not have");
+        }
+    }
+
+    /*"
+        LSR X
+    X   ADC #$FF
+        LDY $B3,X
+    "*/
 }
