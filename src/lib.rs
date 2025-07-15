@@ -475,7 +475,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
     let mut data: Vec<u8> = vec![];
     let mut instructions: Vec<Instruction> = vec![];
 
-    let mut labels: HashMap<String, u16> = HashMap::new();
+    let mut symbols: HashMap<String, Vec<u8>> = HashMap::new();
     let mut pc = 0x0000; // TODO: allow for this to be set by directive at beginning of src
 
     for (line_num, line) in src.lines().enumerate() {
@@ -489,7 +489,18 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         // pop labels
         while tokens.len() > 0 && !OPCODES.contains_key(&tokens[0].to_uppercase()) {
             if RE_WORD.is_match(&tokens[0]) {
-                labels.insert(String::from(tokens.pop_front().unwrap()), pc);
+                if tokens.len() > 2 && tokens[1] == "=" {
+                    let operand = tokens[2];
+                    if RE_NUM_LITERAL.is_match(operand) {
+                        symbols.insert(String::from(tokens.pop_front().unwrap()), parse_num_literal(operand)?);
+                    } else if RE_WORD.is_match(operand) {
+                        bail!("Unsupported");
+                    }
+                    tokens.pop_front();
+                    tokens.pop_front();
+                } else {
+                    symbols.insert(String::from(tokens.pop_front().unwrap()), vec![pc / 16, pc % 16]);
+                }
             } else {
                 bail!("Failed to parse line {}: {}", line_num, line);
             }
@@ -667,16 +678,15 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
 
         if let Some(l) = inst.label {
-            if let Some(label_addr) = labels.get(&l) {
+            if let Some(symbol_value) = symbols.get(&l) {
                 match inst.mode {
                     AddressMode::Rel => {
-                        println!("{}, {}", label_addr, data.len());
-                        let rel_addr: i8 = ((*label_addr as i16) - (data.len() as i16 + 2))
+                        let rel_addr: i8 = (((symbol_value[1] + symbol_value[0] * 16) as i16) - (data.len() as i16 + 2))
                             .try_into()
                             .unwrap();
                         inst.operand = vec![rel_addr as u8];
                     }
-                    _ => inst.operand = vec![(label_addr / 16) as u8, (label_addr % 16) as u8],
+                    _ => inst.operand = symbol_value.to_vec(),
                 }
             } else {
                 bail!("Undefined label: {}", l);
@@ -1290,15 +1300,13 @@ mod tests {
 
         let data: Vec<u8> = assemble(src).unwrap();
 
-        assert_eq!(data.len(), 7);
+        let hex = vec![
+            0xA9, 0xFF,
+            0x69, 0xC4,
+            0x4C, 0x00, 0x00,
+        ];
 
-        assert_eq!(data[0], 0xa9);
-        assert_eq!(data[1], 0xff);
-        assert_eq!(data[2], 0x69);
-        assert_eq!(data[3], 0xc4);
-        assert_eq!(data[4], 0x4c);
-        assert_eq!(data[5], 0x00);
-        assert_eq!(data[6], 0x00);
+        assert_eq!(data, hex);
     }
 
     #[test]
@@ -1410,7 +1418,7 @@ mod tests {
     #[test]
     fn hanging_literal_fail() {
         let res = assemble("
-            LSR #$10
+            LSR $10
             $FF
             ADC $1293
         ");
@@ -1420,9 +1428,59 @@ mod tests {
         }
     }
 
-    /*"
-        LSR X
-    X   ADC #$FF
-        LDY $B3,X
-    "*/
+    #[test]
+    fn constant_symbol_definition() {
+        let data = assemble("
+            VALUE = $38 
+            LSR $FF
+        ").unwrap();
+
+        let hex = vec![
+            0x46, 0xFF,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn constant_symbol_hex() {
+        let data = assemble("
+            ONE_BYTE_HEX = $AC
+            TWO_BYTE_HEX = $182F
+
+            ADC ONE_BYTE_HEX      ; zpg
+            ADC TWO_BYTE_HEX      ; abs
+            ADC #ONE_BYTE_HEX     ; imm
+            ADC ONE_BYTE_HEX,X    ; zpg,x
+            ADC TWO_BYTE_HEX,X    ; abs,x
+            ADC TWO_BYTE_HEX,Y    ; abs,y
+            ADC (ONE_BYTE_HEX,X)  ; Xind 
+            ADC (ONE_BYTE_HEX),Y  ; indY
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xAC,
+            0x6D, 0x2F, 0x18,
+            0x69, 0xAC, 
+            0x75, 0xAC,
+            0x7D, 0x2F, 0x18,
+            0x79, 0x2F, 0x18,
+            0x61, 0xAC,
+            0x71, 0xAC,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    // rename this when brain is juiced up
+    #[test]
+    fn test_1() {
+        let res = assemble("
+            s = \"A=\"
+        ");
+
+        if let Ok(_) = res {
+            panic!("Assemble succeeded when it should not have");
+        }
+    }
 }

@@ -1,5 +1,0 @@
-*
-!**/*.rs
-!Cargo.toml
-!Cargo.lock
-!run_tests.sh

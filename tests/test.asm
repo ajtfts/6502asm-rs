@@ -1,7 +1,7 @@
-          .org $0200
-  xxxx    .equ $10
-  yyyy    .equ $4000
-  zzzz    .equ 255
+     *    = $0200
+  xxxx    = $10
+  yyyy    = $4000
+  zzzz    = 255
   begin   LDA #$FF    ; load accum 
           LDA #255
           LDA #'A'
