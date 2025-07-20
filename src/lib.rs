@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 
@@ -10,404 +9,11 @@ use anyhow::Result;
 use anyhow::bail;
 
 use regex::Regex;
+use opcodes::OPCODES;
+
+mod opcodes;
 
 lazy_static! {
-    static ref OPCODES: HashMap<String, Vec<u8>> = {
-        let mut map = HashMap::new();
-
-        map.insert(
-            "ADC".to_string(),
-            vec![
-                0x00, 0x6d, 0x7d, 0x79, 0x69, 0x00, 0x00, 0x61, 0x71, 0x00, 0x65, 0x75, 0x00,
-            ],
-        );
-
-        map.insert(
-            "AND".to_string(),
-            vec![
-                0x00, 0x2d, 0x3d, 0x39, 0x29, 0x00, 0x00, 0x21, 0x31, 0x00, 0x25, 0x35, 0x00,
-            ],
-        );
-
-        map.insert(
-            "ASL".to_string(),
-            vec![
-                0x0a, 0x0e, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x16, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BCC".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BCS".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BEQ".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BIT".to_string(),
-            vec![
-                0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BMI".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BNE".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BPL".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BRK".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BVC".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "BVS".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CLC".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CLD".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xd8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CLI".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CLV".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CMP".to_string(),
-            vec![
-                0x00, 0xcd, 0xdd, 0xd9, 0xc9, 0x00, 0x00, 0xc1, 0xd1, 0x00, 0xc5, 0xd5, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CPX".to_string(),
-            vec![
-                0x00, 0xec, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "CPY".to_string(),
-            vec![
-                0x00, 0xcc, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc4, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "DEC".to_string(),
-            vec![
-                0x00, 0xce, 0xde, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc6, 0xd6, 0x00,
-            ],
-        );
-
-        map.insert(
-            "DEX".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xca, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "DEY".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "EOR".to_string(),
-            vec![
-                0x00, 0x4d, 0x5d, 0x59, 0x49, 0x00, 0x00, 0x41, 0x51, 0x00, 0x45, 0x55, 0x4d,
-            ],
-        );
-
-        map.insert(
-            "INC".to_string(),
-            vec![
-                0x00, 0xee, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe6, 0xf6, 0x00,
-            ],
-        );
-
-        map.insert(
-            "INX".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "INY".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "JMP".to_string(),
-            vec![
-                0x00, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "JSR".to_string(),
-            vec![
-                0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "LDA".to_string(),
-            vec![
-                0x00, 0xad, 0xbd, 0xb9, 0xa9, 0x00, 0x00, 0xa1, 0xb1, 0x00, 0xa5, 0xb5, 0x00,
-            ],
-        );
-
-        map.insert(
-            "LDX".to_string(),
-            vec![
-                0x00, 0xae, 0x00, 0xbe, 0xa2, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa6, 0x00, 0xb6,
-            ],
-        );
-
-        map.insert(
-            "LDY".to_string(),
-            vec![
-                0x00, 0xac, 0xbc, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa4, 0xb4, 0x00,
-            ],
-        );
-
-        map.insert(
-            "LSR".to_string(),
-            vec![
-                0x4a, 0x4e, 0x5e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x56, 0x00,
-            ],
-        );
-        map.insert(
-            "NOP".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xea, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "ORA".to_string(),
-            vec![
-                0x00, 0x0d, 0x1d, 0x19, 0x09, 0x00, 0x00, 0x01, 0x11, 0x00, 0x05, 0x15, 0x00,
-            ],
-        );
-
-        map.insert(
-            "PHA".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "PHP".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "PLA".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "PLP".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "ROL".to_string(),
-            vec![
-                0x2a, 0x2e, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26, 0x36, 0x00,
-            ],
-        );
-
-        map.insert(
-            "ROR".to_string(),
-            vec![
-                0x6a, 0x6e, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x66, 0x76, 0x00,
-            ],
-        );
-
-        map.insert(
-            "RTI".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "RTS".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "SBC".to_string(),
-            vec![
-                0x00, 0xed, 0xfd, 0xf9, 0xE9, 0x00, 0x00, 0xe1, 0xf1, 0x00, 0xe5, 0xf5, 0x00,
-            ],
-        );
-
-        map.insert(
-            "SEC".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "SED".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "SEI".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "STA".to_string(),
-            vec![
-                0x00, 0x8d, 0x9d, 0x99, 0x00, 0x00, 0x00, 0x81, 0x91, 0x00, 0x85, 0x95, 0x00,
-            ],
-        );
-
-        map.insert(
-            "STX".to_string(),
-            vec![
-                0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86, 0x00, 0x96,
-            ],
-        );
-
-        map.insert(
-            "STY".to_string(),
-            vec![
-                0x00, 0x8c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x84, 0x94, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TAX".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TAY".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xa8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TSX".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TXA".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x8a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TXS".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map.insert(
-            "TYA".to_string(),
-            vec![
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ],
-        );
-
-        map
-    };
     static ref RE_TOKEN: Regex =
         Regex::new(r"(;[^\n\r]*|(\$[0-9a-fA-F]+|%[01]+|\b\d)|(\w+)|([^\w\s]))").unwrap();
     static ref RE_WORD: Regex = Regex::new(r"^\w+$").unwrap();
@@ -433,7 +39,7 @@ impl Config {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 enum AddressMode {
     A,    // accumulator
     Abs,  // absolute
@@ -450,11 +56,17 @@ enum AddressMode {
     ZpgY, // zeropage, Y-indexed
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum Operand {
+    Raw(Vec<u8>),
+    Symbol(String),
+    LabelPos(usize),
+}
+
 struct Instruction {
     name: String,
     mode: AddressMode,
-    operand: Vec<u8>,      // zero, one or two item u8 vec
-    label: Option<String>, // if the instruction references a label
+    operand: Option<Operand>,
 }
 
 fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
@@ -471,13 +83,7 @@ fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
     }
 }
 
-pub fn assemble(src: &str) -> Result<Vec<u8>> {
-    let mut data: Vec<u8> = vec![];
-    let mut instructions: Vec<Instruction> = vec![];
-
-    let mut symbols: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut pc = 0x0000; // TODO: allow for this to be set by directive at beginning of src
-
+fn first_pass(src: &str, instructions: &mut Vec<Instruction>, symbols: &mut HashMap<String, Operand>) -> Result<(), Error> {
     for (line_num, line) in src.lines().enumerate() {
         let mut tokens: VecDeque<&str> = tokenize(line).collect();
 
@@ -486,27 +92,28 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             tokens.pop_back();
         }
 
-        // pop labels
-        while tokens.len() > 0 && !OPCODES.contains_key(&tokens[0].to_uppercase()) {
+        // pop labels/assignment
+        while tokens.len() > 0 && !opcodes::OPCODES.contains_key(&tokens[0].to_uppercase()) {
             if RE_WORD.is_match(&tokens[0]) {
+                // Assigning to a symbol
                 if tokens.len() > 2 && tokens[1] == "=" {
                     let operand = tokens[2];
                     if RE_NUM_LITERAL.is_match(operand) {
-                        symbols.insert(String::from(tokens.pop_front().unwrap()), parse_num_literal(operand)?);
+                        symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::Raw(parse_num_literal(operand)?));
                     } else if RE_WORD.is_match(operand) {
-                        bail!("Unsupported");
+                        symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::Symbol(String::from(operand)));
                     }
                     tokens.pop_front();
                     tokens.pop_front();
-                } else {
-                    symbols.insert(String::from(tokens.pop_front().unwrap()), vec![pc / 16, pc % 16]);
+                } else /* No assignment, so simply pop label from beginning of line */ {
+                    symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::LabelPos(instructions.len()));
                 }
             } else {
                 bail!("Failed to parse line {}: {}", line_num, line);
             }
         }
 
-        // line could potentially just be labels/comments
+        // line could potentially just be labels/an assignment/comments
         if tokens.is_empty() {
             continue;
         }
@@ -519,8 +126,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         let mut inst = Instruction {
             name: String::from(&tokens[0].to_uppercase()),
             mode: AddressMode::Imp,
-            operand: vec![],
-            label: None,
+            operand: None,
         };
 
         match tokens.len() {
@@ -530,39 +136,64 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                     inst.mode = AddressMode::A;
                 } else {
                     if RE_NUM_LITERAL.is_match(&tokens[1]) {
-                        inst.operand = parse_num_literal(&tokens[1]).unwrap();
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[1])?));
                     } else if RE_WORD.is_match(&tokens[1]) {
-                        inst.label = Some(String::from(tokens[1]));
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
+                    } else {
+                        bail!("Invalid operand: {}", &tokens[1]);
                     }
+
+
 
                     match &tokens[0].to_uppercase()[..] {
                         "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
                             inst.mode = AddressMode::Rel;
-                        }
-                        _ => match inst.operand.len() {
-                            0 if inst.label != None => inst.mode = AddressMode::Abs,
-                            1 => inst.mode = AddressMode::Zpg,
-                            2 => inst.mode = AddressMode::Abs,
-                            _ => bail!(
-                                "Could not determine addressing mode (line {}): {}",
-                                line_num,
-                                line
-                            ),
+                        },
+                        _ => {
+                            if let Some(ref op) = inst.operand {
+                                match op {
+                                    Operand::Raw(val) => {
+                                        match val.len() {
+                                            1 => inst.mode = AddressMode::Zpg,
+                                            2 => inst.mode = AddressMode::Abs,
+                                            _ => bail!(
+                                                "Invalid operand size"
+                                            ),
+                                        }
+                                    },
+                                    Operand::Symbol(_) | Operand::LabelPos(_) => {
+                                        inst.mode = AddressMode::Abs;
+                                    },
+                                }
+                            } else {
+                                bail!("Operand expected");
+                            }
                         },
                     }
                 }
             }
             3 if tokens[1] == "#" => { // AddressMode::Imm
                 inst.mode = AddressMode::Imm;
-                inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                let operand = tokens[2];
+                if RE_NUM_LITERAL.is_match(operand) {
+                    inst.operand = Some(Operand::Raw(parse_num_literal(operand).unwrap()));
+                } else if RE_WORD.is_match(operand) {
+                    inst.operand = Some(Operand::Symbol(String::from(operand)));
+                } else {
+                    bail!(
+                        "Could not determine addressing mode (line {}): {}",
+                        line_num,
+                        line
+                    );
+                }
             }
             4 => { // AddressMode::{ZpgX, ZpgY, AbsX, AbsY, Ind}
                 if tokens[1] == "(" && tokens[3] == ")" {
                     inst.mode = AddressMode::Ind;
                     if RE_NUM_LITERAL.is_match(&tokens[2]) {
-                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2]).unwrap()));
                     } else if RE_WORD.is_match(&tokens[2]) {
-                        inst.label = Some(String::from(tokens[1]));
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
                     } else {
                         bail!(
                             "Could not determine addressing mode (line {}): {}",
@@ -572,9 +203,10 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                     }
                 } else if tokens[2] == "," {
                     if RE_NUM_LITERAL.is_match(&tokens[1]) {
-                        inst.operand = parse_num_literal(&tokens[1]).unwrap();
+                        let raw_val = parse_num_literal(&tokens[1])?;
+                        inst.operand = Some(Operand::Raw(raw_val.clone()));
                         inst.mode = match &tokens[3].to_uppercase()[..] {
-                            "X" => match inst.operand.len() {
+                            "X" => match raw_val.len() {
                                 1 => AddressMode::ZpgX,
                                 2 => AddressMode::AbsX,
                                 _ => bail!(
@@ -583,7 +215,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                                     line
                                 ),
                             },
-                            "Y" => match inst.operand.len() {
+                            "Y" => match raw_val.len() {
                                 1 => AddressMode::ZpgY,
                                 2 => AddressMode::AbsY,
                                 _ => bail!(
@@ -602,9 +234,9 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                         inst.mode = match &tokens[3].to_uppercase()[..] {
                             "X" => AddressMode::AbsX,
                             "Y" => AddressMode::AbsY,
-                            _ => bail!("eou"),
+                            _ => bail!("Unsupported operand (line {}): {}", line_num, tokens[3].to_uppercase()),
                         };
-                        inst.label = Some(String::from(tokens[1]));
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
                     } else {
                         bail!(
                             "Could not determine addressing mode (line {}): {}",
@@ -628,9 +260,9 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                 {
                     inst.mode = AddressMode::XInd;
                     if RE_NUM_LITERAL.is_match(&tokens[2]) {
-                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2])?));
                     } else if RE_WORD.is_match(&tokens[2]) {
-                        inst.label = Some(String::from(tokens[2]));
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[2])));
                     }
                 } else if tokens[1] == "("
                     && tokens[3] == ")"
@@ -639,9 +271,9 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                 {
                     inst.mode = AddressMode::IndY;
                     if RE_NUM_LITERAL.is_match(&tokens[2]) {
-                        inst.operand = parse_num_literal(&tokens[2]).unwrap();
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2])?));
                     } else if RE_WORD.is_match(&tokens[2]) {
-                        inst.label = Some(String::from(tokens[2]));
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[2])));
                     }
                 } else {
                     bail!(
@@ -658,46 +290,172 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             ),
         }
 
-        pc += 1;
-        pc += match inst.mode {
-            AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY | AddressMode::Ind => 2,
-            AddressMode::Zpg
-            | AddressMode::ZpgX
-            | AddressMode::ZpgY
-            | AddressMode::Imm
-            | AddressMode::XInd
-            | AddressMode::IndY
-            | AddressMode::Rel => 1,
-            _ => 0,
-        };
-
         instructions.push(inst);
     }
 
-    for mut inst in instructions {
-        let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+    Ok(())
 
-        if let Some(l) = inst.label {
-            if let Some(symbol_value) = symbols.get(&l) {
-                match inst.mode {
-                    AddressMode::Rel => {
-                        let rel_addr: i8 = (((symbol_value[1] + symbol_value[0] * 16) as i16) - (data.len() as i16 + 2))
-                            .try_into()
-                            .unwrap();
-                        inst.operand = vec![rel_addr as u8];
+}
+
+fn resolve_symbols(symbols: &mut HashMap<String, Operand>) -> Result<(), Error> {
+    let mut to_update: HashMap<String, Operand> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (key_symbol, operand) in symbols.iter() { 
+        let mut current: &Operand = operand;
+
+        loop {
+            match current {
+                Operand::Raw(val) => {
+                    to_update.insert(key_symbol.to_string(), Operand::Raw(val.clone()));
+                    break;
+                },
+                Operand::LabelPos(inst_pos) => {
+                    to_update.insert(key_symbol.to_string(), Operand::LabelPos(*inst_pos));
+                    break;
+                },
+                Operand::Symbol(sym) => {
+                    if !seen.contains(key_symbol) && let Some(new_op) = symbols.get(sym) {
+                        current = new_op;
+                        seen.insert(key_symbol.to_string());
+                    } else {
+                        bail!("Undefined symbol: {}", sym);
                     }
-                    _ => inst.operand = symbol_value.to_vec(),
-                }
-            } else {
-                bail!("Undefined label: {}", l);
+                },
             }
         }
+    }
 
-        data.push(opcode);
-        for byte in inst.operand.into_iter().rev() {
-            data.push(byte);
+    for (symbol, operand) in to_update.into_iter() {
+        symbols.insert(symbol, operand);
+    }
+
+    Ok(())
+}
+
+pub fn assemble(src: &str) -> Result<Vec<u8>> {
+    let mut data: Vec<u8> = vec![];
+
+    let mut instructions: Vec<Instruction> = vec![];
+    let mut symbols: HashMap<String, Operand> = HashMap::new();
+
+    first_pass(src, &mut instructions, &mut symbols)?;
+
+    resolve_symbols(&mut symbols)?;
+
+    let mut pc: u16 = 0x0000; // TODO: allow for this to be set by *=
+    let mut inst_addrs: Vec<u16> = vec![0; instructions.len()];
+    let mut label_addrs: HashMap<usize, Vec<usize>> = HashMap::new();
+
+    for (i, inst) in instructions.iter().enumerate() {
+        
+        inst_addrs[i] = pc;
+
+        match &inst.operand {
+            Some(Operand::Raw(val)) => {
+                let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                data.push(opcode);
+                pc += 1;
+
+                for byte in val.into_iter().rev() {
+                    data.push(*byte);
+                    pc += 1;
+                }
+            },
+            Some(Operand::LabelPos(_)) => bail!(""),
+            Some(Operand::Symbol(sym)) => {
+                match symbols.get(sym) {
+                    Some(Operand::Raw(val)) => {
+                        let addr_mode = match inst.mode {
+                            AddressMode::Abs => {
+                                match val.len() {
+                                    1 => AddressMode::Zpg,
+                                    2 => AddressMode::Abs,
+                                    _ => bail!(""),
+                                }
+                            },
+                            AddressMode::AbsX => {
+                                match val.len() {
+                                    1 => AddressMode::ZpgX,
+                                    2 => AddressMode::AbsX,
+                                    _ => bail!(""),
+                                }
+                            },
+                            AddressMode::AbsY => {
+                                match val.len() {
+                                    1 => AddressMode::ZpgY,
+                                    2 => AddressMode::AbsY,
+                                    _ => bail!(""),
+                                }
+                            }
+                            _ => inst.mode,
+                        };
+                        let opcode = OPCODES.get(&inst.name).unwrap()[addr_mode as usize];
+                        data.push(opcode);
+                        pc += 1;
+                        for byte in val.into_iter().rev() {
+                            data.push(*byte);
+                            pc += 1;
+                        }
+                    },
+                    Some(Operand::LabelPos(pos)) => {
+
+                        // Mark this position for later change
+                        label_addrs.entry(*pos).or_insert(Vec::new()).push(i);
+
+                        let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                        data.push(opcode);
+                        pc += 1;
+
+                        // We'll come back and set these properly after we've determined all instruction addresses.
+                        match inst.mode {
+                            AddressMode::Rel => {
+                                data.push(0x00);
+                                pc += 1;
+                            },
+                            _ => {
+                                data.push(0x00); // For now, we assume labels will always refer to two byte addresses.
+                                data.push(0x00);
+                                pc += 2;
+                            },
+                        }
+                    },
+                    None => bail!("Undefined symbol: {}", sym),
+                    _ => bail!("Unresolved symbol: {}", sym),
+                } 
+            },
+            _ => {
+                let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                data.push(opcode);
+                pc += 1;
+            }
         }
     }
+
+    for (label_pos, to_update) in label_addrs {
+        for inst_pos in to_update {
+            let inst = &instructions[inst_pos];
+            let mut val: Vec<u8> = vec![];
+
+            match inst.mode {
+                AddressMode::Rel => {
+                    let rel_addr = (inst_addrs[label_pos] as i16 - (inst_addrs[inst_pos] as i16 + 2)) as u8;
+
+                    val.push(rel_addr);
+                },
+                AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY | AddressMode::Ind  => {
+                    val.push((inst_addrs[label_pos] % 16) as u8);
+                    val.push((inst_addrs[label_pos] / 16) as u8);
+                },
+                _ => bail!(""),
+            }
+            for (i, byte) in val.iter().enumerate() {
+                data[inst_addrs[inst_pos] as usize + i + 1] = *byte;
+            }
+        }
+    }
+
+
 
     Ok(data)
 }
@@ -1274,25 +1032,24 @@ mod tests {
 
     #[test]
     fn dummy_label_2() {
-        let src = "
+
+        let data: Vec<u8> = assemble("
             LSR $4283
             what ADC #$1f
-        "; // lowercase labels should also work
+        ").unwrap();
 
-        let data: Vec<u8> = assemble(src).unwrap();
+        let hex = vec![
+            0x4E, 0x83, 0x42,
+            0x69, 0x1F
+        ];
 
-        assert_eq!(data.len(), 5);
-
-        assert_eq!(data[0], 0x4E);
-        assert_eq!(data[1], 0x83);
-        assert_eq!(data[2], 0x42);
-        assert_eq!(data[3], 0x69);
-        assert_eq!(data[4], 0x1F);
+        assert_eq!(data, hex);
     }
 
     #[test]
     fn jmp_label_a_backward() {
         let src = "
+            NOP ; putting this here so automatically setting the addr to 0x0000 doesn't pass
             BEGIN LDA #$ff
             ADC #$c4
             JMP BEGIN
@@ -1301,9 +1058,10 @@ mod tests {
         let data: Vec<u8> = assemble(src).unwrap();
 
         let hex = vec![
+            0xEA,
             0xA9, 0xFF,
             0x69, 0xC4,
-            0x4C, 0x00, 0x00,
+            0x4C, 0x01, 0x00,
         ];
 
         assert_eq!(data, hex);
@@ -1311,15 +1069,23 @@ mod tests {
 
     #[test]
     fn jmp_label_a_forward() {
-        let src = "
+        let data: Vec<u8> = assemble("
+            NOP
             JMP END
             ADC #$c4
             END LDA #$FF
-        ";
+        ").unwrap();
 
-        let data: Vec<u8> = assemble(src).unwrap();
+        let hex = vec![
+            0xEA,
+            0x4C, 0x06, 0x00,
+            0x69, 0xC4, 
+            0xA9, 0xFF,
+        ];
 
-        assert_eq!(data.len(), 7);
+        assert_eq!(data, hex);
+
+        /*assert_eq!(data.len(), 7);
 
         assert_eq!(data[0], 0x4c);
         assert_eq!(data[1], 0x05);
@@ -1327,30 +1093,31 @@ mod tests {
         assert_eq!(data[3], 0x69);
         assert_eq!(data[4], 0xc4);
         assert_eq!(data[5], 0xa9);
-        assert_eq!(data[6], 0xff);
+        assert_eq!(data[6], 0xff);*/
     }
 
     #[test]
     fn jmp_label_a_comments() {
-        let src = "
+
+        let data: Vec<u8> = assemble("
+            NOP
             START LDA #$01 ; This is the start
             JMP START
-        ";
+        ").unwrap();
 
-        let data: Vec<u8> = assemble(src).unwrap();
+        let hex = vec![
+            0xEA,
+            0xA9, 0x01,
+            0x4C, 0x01, 0x00,
+        ];
 
-        assert_eq!(data.len(), 5);
-
-        assert_eq!(data[0], 0xA9);
-        assert_eq!(data[1], 0x01);
-        assert_eq!(data[2], 0x4C);
-        assert_eq!(data[3], 0x00);
-        assert_eq!(data[4], 0x00);
+        assert_eq!(data, hex);
     }
 
     #[test]
     fn jmp_label_multiple() {
         let src = "
+            NOP
             LABEL1  LSR $AC82,X
                     ADC #$11
                     LDA ($05,X)
@@ -1364,14 +1131,15 @@ mod tests {
         let data: Vec<u8> = assemble(src).unwrap();
 
         let hex: Vec<u8> = vec![
+            0xEA,
             0x5E, 0x82, 0xAC, 
             0x69, 0x11, 
             0xA1, 0x05, 
-            0x4C, 0x0C, 0x00,
+            0x4C, 0x0D, 0x00,
             0xB1, 0x10,
             0x6D, 0x34, 0x12,
             0xA2, 0x3F,
-            0x4C, 0x00, 0x00,
+            0x4C, 0x01, 0x00,
         ];
 
         assert_eq!(data, hex);
@@ -1472,6 +1240,86 @@ mod tests {
         assert_eq!(data, hex);
     }
 
+    #[test]
+    fn symbols_with_jump() {
+        let data = assemble("
+                    ONE_BYTE_HEX = $AC
+                    TWO_BYTE_HEX = $182F
+
+                    ADC ONE_BYTE_HEX      ; zpg
+                    ADC TWO_BYTE_HEX      ; abs
+                    ADC #ONE_BYTE_HEX     ; imm
+                    JMP LABEL
+                    ADC ONE_BYTE_HEX,X    ; zpg,x
+                    ADC TWO_BYTE_HEX,X    ; abs,x
+            LABEL   ADC TWO_BYTE_HEX,Y    ; abs,y
+                    ADC (ONE_BYTE_HEX,X)  ; Xind 
+                    ADC (ONE_BYTE_HEX),Y  ; indY
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xAC,
+            0x6D, 0x2F, 0x18,
+            0x69, 0xAC,
+            0x4C, 0x0F, 0x00, 
+            0x75, 0xAC,
+            0x7D, 0x2F, 0x18,
+            0x79, 0x2F, 0x18,
+            0x61, 0xAC,
+            0x71, 0xAC,
+        ];
+
+        assert_eq!(data, hex); 
+    }
+
+    #[test]
+    fn symbols_with_branching() {
+        let data = assemble("
+                    ONE_BYTE_HEX = $AC
+                    TWO_BYTE_HEX = $182F
+
+                    ADC ONE_BYTE_HEX      ; zpg
+                    ADC TWO_BYTE_HEX      ; abs
+                    ADC #ONE_BYTE_HEX     ; imm
+                    BNE LABEL
+                    ADC ONE_BYTE_HEX,X    ; zpg,x
+                    ADC TWO_BYTE_HEX,X    ; abs,x
+            LABEL   ADC TWO_BYTE_HEX,Y    ; abs,y
+                    ADC (ONE_BYTE_HEX,X)  ; Xind 
+                    ADC (ONE_BYTE_HEX),Y  ; indY
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xAC,
+            0x6D, 0x2F, 0x18,
+            0x69, 0xAC,
+            0xD0, 0x05, 
+            0x75, 0xAC,
+            0x7D, 0x2F, 0x18,
+            0x79, 0x2F, 0x18,
+            0x61, 0xAC,
+            0x71, 0xAC,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn symbol_refers_to_symbol() {
+        let data = assemble("
+            VAR1 = VAR2
+            VAR2 = $FF
+
+            ADC VAR1
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xFF
+        ];
+
+        assert_eq!(data, hex);
+    }
+
     // rename this when brain is juiced up
     #[test]
     fn test_1() {
@@ -1483,4 +1331,22 @@ mod tests {
             panic!("Assemble succeeded when it should not have");
         }
     }
+
+    // Resolve symbols
+
+    #[test]
+    fn resolve_constants() {
+        let mut symbols: HashMap<String, Operand> = HashMap::new();
+
+        let operand = Operand::Raw(vec![0x3F, 0xD4]);
+
+        symbols.insert("VAR1".to_string(), operand.clone());
+        symbols.insert("VAR2".to_string(), Operand::Symbol("VAR1".to_string()));
+
+        resolve_symbols(&mut symbols).unwrap();
+
+        assert_eq!(*symbols.get("VAR1").unwrap(), operand);
+        assert_eq!(*symbols.get("VAR2").unwrap(), operand);
+    }
+
 }
