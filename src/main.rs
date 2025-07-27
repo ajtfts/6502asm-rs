@@ -1,19 +1,30 @@
 use asm6502::{Config, assemble_from_file};
 use std::error::Error;
-use std::{env, process};
+use std::process;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    input_file: String,
+    #[arg(short, long = "output")]
+    output_file: Option<String>,
+    #[arg(short='L', long="list")] // todo
+    list_file: Option<String>,
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    let config = Config::new(&args).unwrap_or_else(|err| {
-        println!("Problem parsing arguments: {}", err);
-        process::exit(1);
-    });
+    let config = Config {
+        input: args.input_file,
+        output: args.output_file.unwrap_or(String::from("a.out")),
+    };
 
     if let Err(e) = assemble_from_file(config) {
-        println!("Application error: {}", e);
-
+        eprintln!("{e}");
         process::exit(1);
     }
+
     Ok(())
 }

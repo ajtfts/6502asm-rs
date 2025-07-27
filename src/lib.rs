@@ -15,9 +15,9 @@ mod opcodes;
 
 lazy_static! {
     static ref RE_TOKEN: Regex =
-        Regex::new(r"(;[^\n\r]*|(\$[0-9a-fA-F]+|%[01]+|\b\d)|(\w+)|([^\w\s]))").unwrap();
+        Regex::new(r"(;[^\n\r]*|(\$[0-9a-fA-F]+|%[01]+|\b\d+)|(\w+)|([^\w\s]))").unwrap();
     static ref RE_WORD: Regex = Regex::new(r"^\w+$").unwrap();
-    static ref RE_NUM_LITERAL: Regex = Regex::new(r"(\$[0-9a-fA-F]+|%[01]+|\b\d)").unwrap();
+    static ref RE_NUM_LITERAL: Regex = Regex::new(r"(\$[0-9a-fA-F]+|%[01]+|\b\d+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r";[^\n\r]*").unwrap();
 }
 
@@ -28,6 +28,7 @@ pub struct Config {
 
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, &str> {
+        
         if args.len() < 3 {
             return Err("not enough arguments");
         }
@@ -79,11 +80,29 @@ fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
     }
     match literal.chars().next().unwrap() {
         '$' => hex::decode(&literal[1..]).map_err(|e| Error::new(e)),
-        _ => bail!("Could not parse literal: {}", literal),
+        '%' => {
+            let val = u16::from_str_radix(&literal[1..], 2)?;
+            if val > 255 {
+                Ok(val.to_be_bytes().to_vec())
+            } else {
+                Ok(vec![val as u8])
+            }
+        }
+        '\'' => {
+            todo!("Character constant definition not yet supported")
+        },
+        _ => {
+            let val = literal.parse::<u16>()?;
+            if val > 255 {
+                Ok(val.to_be_bytes().to_vec())
+            } else {
+                Ok(vec![val as u8])
+            }
+        }
     }
 }
 
-fn first_pass(src: &str, instructions: &mut Vec<Instruction>, symbols: &mut HashMap<String, Operand>) -> Result<(), Error> {
+fn first_pass(src: &str, instructions: &mut Vec<Instruction>, symbols: &mut HashMap<String, Operand>) -> Result<()> {
     for (line_num, line) in src.lines().enumerate() {
         let mut tokens: VecDeque<&str> = tokenize(line).collect();
 
@@ -102,6 +121,8 @@ fn first_pass(src: &str, instructions: &mut Vec<Instruction>, symbols: &mut Hash
                         symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::Raw(parse_num_literal(operand)?));
                     } else if RE_WORD.is_match(operand) {
                         symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::Symbol(String::from(operand)));
+                    } else if operand == "*" {
+                        bail!("pc set not yet supported");
                     }
                     tokens.pop_front();
                     tokens.pop_front();
@@ -344,12 +365,21 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
     resolve_symbols(&mut symbols)?;
 
     let mut pc: u16 = 0x0000; // TODO: allow for this to be set by *=
-    let mut inst_addrs: Vec<u16> = vec![0; instructions.len()];
-    let mut label_addrs: HashMap<usize, Vec<usize>> = HashMap::new();
 
+    // each nth entry in inst_addrs represents the program counter at the beginning of the nth instruction
+    let mut inst_addrs: Vec<u16> = vec![0; instructions.len()];
+
+    // mapping from a label's position in instructions to a vector of addresses representing 
+    // the instructions which will need to be set to that label once labels are resolved
+    let mut label_updates: HashMap<usize, Vec<usize>> = HashMap::new();
+
+
+    // "2nd pass". by the end of this for loop the data array should be mostly correct,
+    // though label addresses will of course need to be updated after the fact
     for (i, inst) in instructions.iter().enumerate() {
         
         inst_addrs[i] = pc;
+
 
         match &inst.operand {
             Some(Operand::Raw(val)) => {
@@ -401,7 +431,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
                     Some(Operand::LabelPos(pos)) => {
 
                         // Mark this position for later change
-                        label_addrs.entry(*pos).or_insert(Vec::new()).push(i);
+                        label_updates.entry(*pos).or_insert(Vec::new()).push(i);
 
                         let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
                         data.push(opcode);
@@ -432,7 +462,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
         }
     }
 
-    for (label_pos, to_update) in label_addrs {
+    for (label_pos, to_update) in label_updates {
         for inst_pos in to_update {
             let inst = &instructions[inst_pos];
             let mut val: Vec<u8> = vec![];
@@ -440,7 +470,6 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
             match inst.mode {
                 AddressMode::Rel => {
                     let rel_addr = (inst_addrs[label_pos] as i16 - (inst_addrs[inst_pos] as i16 + 2)) as u8;
-
                     val.push(rel_addr);
                 },
                 AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY | AddressMode::Ind  => {
@@ -460,7 +489,7 @@ pub fn assemble(src: &str) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
+pub fn assemble_from_file(config: Config) -> Result<()> {
     let input_file = File::open(config.input)?;
     let mut b = io::BufReader::new(input_file);
 
@@ -475,7 +504,7 @@ pub fn assemble_from_file(config: Config) -> Result<Vec<u8>> {
             let mut output_file = File::create(config.output)?;
             output_file.write_all(&data[..])?;
 
-            Ok(data)
+            Ok(())
         }
         Err(e) => bail!(e),
     }
@@ -1084,16 +1113,6 @@ mod tests {
         ];
 
         assert_eq!(data, hex);
-
-        /*assert_eq!(data.len(), 7);
-
-        assert_eq!(data[0], 0x4c);
-        assert_eq!(data[1], 0x05);
-        assert_eq!(data[2], 0x00);
-        assert_eq!(data[3], 0x69);
-        assert_eq!(data[4], 0xc4);
-        assert_eq!(data[5], 0xa9);
-        assert_eq!(data[6], 0xff);*/
     }
 
     #[test]
@@ -1235,6 +1254,66 @@ mod tests {
             0x79, 0x2F, 0x18,
             0x61, 0xAC,
             0x71, 0xAC,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn constant_symbol_dec() {
+        let data = assemble("
+            ONE_BYTE_DEC = 255
+            TWO_BYTE_DEC = 4000
+
+            ADC ONE_BYTE_DEC      ; zpg
+            ADC TWO_BYTE_DEC      ; abs
+            ADC #ONE_BYTE_DEC     ; imm
+            ADC ONE_BYTE_DEC,X    ; zpg,x
+            ADC TWO_BYTE_DEC,X    ; abs,x
+            ADC TWO_BYTE_DEC,Y    ; abs,y
+            ADC (ONE_BYTE_DEC,X)  ; Xind 
+            ADC (ONE_BYTE_DEC),Y  ; indY
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xFF,
+            0x6D, 0xA0, 0x0F,
+            0x69, 0xFF, 
+            0x75, 0xFF,
+            0x7D, 0xA0, 0x0F,
+            0x79, 0xA0, 0x0F,
+            0x61, 0xFF,
+            0x71, 0xFF,
+        ];
+
+        assert_eq!(data, hex);
+    }
+
+    #[test]
+    fn constant_symbol_bin() {
+        let data = assemble("
+            ONE_BYTE_BIN = %11111111
+            TWO_BYTE_BIN = %111110100000
+
+            ADC ONE_BYTE_BIN      ; zpg
+            ADC TWO_BYTE_BIN      ; abs
+            ADC #ONE_BYTE_BIN     ; imm
+            ADC ONE_BYTE_BIN,X    ; zpg,x
+            ADC TWO_BYTE_BIN,X    ; abs,x
+            ADC TWO_BYTE_BIN,Y    ; abs,y
+            ADC (ONE_BYTE_BIN,X)  ; Xind 
+            ADC (ONE_BYTE_BIN),Y  ; indY
+        ").unwrap();
+
+        let hex = vec![
+            0x65, 0xFF,
+            0x6D, 0xA0, 0x0F,
+            0x69, 0xFF, 
+            0x75, 0xFF,
+            0x7D, 0xA0, 0x0F,
+            0x79, 0xA0, 0x0F,
+            0x61, 0xFF,
+            0x71, 0xFF,
         ];
 
         assert_eq!(data, hex);

@@ -6,7 +6,7 @@
           LDA #255
           LDA #'A'
           LDA #%00000011
-          LDA byte2,X
+          LDA xxxx,X
           BNE begin
           BEQ debug
           STA $1500   ; save it
@@ -23,8 +23,3 @@ clrlp     sta (xxxx),y
           lda xxxx+1
           lda yyyy+10
           JMP ($5597)
-  byte1   .db $0f,$44,15,$ee,80
-  byte2   .db 'ABCD',%00001111
-  area1   .ds 5
-  byte2   .db $55
-          .end
