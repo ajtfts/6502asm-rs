@@ -10,7 +10,9 @@ struct Args {
     #[arg(short, long = "output")]
     output_file: Option<String>,
     #[arg(short='L', long="list")] // todo
-    list_file: Option<String>,
+    asm_list_file: Option<String>,
+    #[arg(short='l', long="labels")]
+    sym_list_file: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -19,6 +21,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = Config {
         input: args.input_file,
         output: args.output_file.unwrap_or(String::from("a.out")),
+        asm_listing: args.asm_list_file,
+        sym_listing: args.sym_list_file,
     };
 
     if let Err(e) = assemble_from_file(config) {

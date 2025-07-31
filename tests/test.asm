@@ -1,7 +1,7 @@
      *    = $0200
   xxxx    = $10
   yyyy    = $4000
-  zzzz    = 255
+  zzzz    = %11111111
   begin   LDA #$FF    ; load accum 
           LDA #255
           LDA #'A'
