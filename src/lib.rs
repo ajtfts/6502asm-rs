@@ -1,6 +1,10 @@
+mod opcodes;
+mod error;
+
+use opcodes::OPCODES;
+use error::AsmError;
+
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
-use std::io::{self, Read, Write};
 
 use anyhow::Error;
 use lazy_static::lazy_static;
@@ -9,12 +13,6 @@ use anyhow::Result;
 use anyhow::bail;
 
 use regex::Regex;
-
-use opcodes::OPCODES;
-use error::AsmError;
-
-mod opcodes;
-mod error;
 
 lazy_static! {
     static ref RE_TOKEN: Regex =
@@ -26,13 +24,6 @@ lazy_static! {
     static ref RE_HEX_LITERAL: Regex = Regex::new(r"\$[0-9a-fA-F]+").unwrap();
     static ref RE_DEC_LITERAL: Regex = Regex::new(r"\b\d+").unwrap();
     static ref RE_BIN_LITERAL: Regex = Regex::new(r"%[01]+").unwrap();
-}
-
-pub struct Config {
-    pub input: String,
-    pub output: String,
-    pub asm_listing: Option<String>,
-    pub sym_listing: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -53,7 +44,7 @@ enum AddressMode {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Operand {
+pub enum Operand {
     Raw(Vec<u8>),
     Symbol(String),
     LabelPos(usize),
@@ -69,6 +60,20 @@ enum AsmItem {
     Inst(Instruction),
     Pc(u16),
     Data(Vec<u8>),
+}
+
+pub struct ListingItem {
+    line_num: Option<usize>,
+    offset: u16,
+    hex: Vec<u8>,
+    monitor: Option<String>,
+    source: Option<String>,
+}
+
+pub struct AsmResult {
+    pub data: Vec<u8>,
+    pub symbols: HashMap<String, Operand>,
+    pub listing: Vec<ListingItem>,
 }
 
 fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
@@ -318,7 +323,7 @@ fn resolve_symbols(symbols: &mut HashMap<String, Operand>) -> Result<(), AsmErro
     Ok(())
 }
 
-pub fn assemble(src: &str) -> Result<Vec<u8>, AsmError> {
+pub fn assemble(src: &str) -> Result<AsmResult, AsmError> {
     let mut data: Vec<u8> = vec![];
 
     let mut asm_items: Vec<AsmItem> = vec![];
@@ -458,31 +463,13 @@ pub fn assemble(src: &str) -> Result<Vec<u8>, AsmError> {
         }
     }
 
-
-
-    Ok(data)
+    Ok(AsmResult {
+        data,
+        symbols,
+        listing: vec![],
+    })
 }
 
-pub fn assemble_from_file(config: Config) -> Result<()> {
-    let input_file = File::open(config.input)?;
-    let mut b = io::BufReader::new(input_file);
-
-    let mut src: String = String::new();
-
-    if let Err(e) = b.read_to_string(&mut src) {
-        bail!(e);
-    }
-
-    match assemble(&src) {
-        Ok(data) => {
-            let mut output_file = File::create(config.output)?;
-            output_file.write_all(&data[..])?;
-
-            Ok(())
-        }
-        Err(e) => bail!(e),
-    }
-}
 
 #[rustfmt::skip]
 #[cfg(test)]
@@ -571,7 +558,7 @@ mod tests {
             LSR A
             ROL A
             ROR A
-        ").unwrap();
+        ").unwrap().data;
         
         let hex: Vec<u8> = vec![
             0x0A,
@@ -612,7 +599,7 @@ mod tests {
             TXA
             TXS
             TYA
-        ").unwrap();
+        ").unwrap().data;
 
         let hex: Vec<u8> = vec![
             0x00,
@@ -673,7 +660,7 @@ mod tests {
             STX $22A8
             STY $DFB0
             
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x6D, 0x42, 0xDF,
@@ -722,7 +709,7 @@ mod tests {
             ROR $D6EF,X
             SBC $08C3,X
             STA $67BD,X
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x7D, 0xF1, 0xA3,
@@ -757,7 +744,7 @@ mod tests {
             ORA $7FDD,Y
             SBC $14F1,Y
             STA $A39F,Y
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x79, 0xA8, 0x22,
@@ -778,7 +765,7 @@ mod tests {
     fn parse_addr_mode_indirect() {
         let data = assemble("
             JMP ($C3B4)
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x6C, 0xB4, 0xC3,
@@ -798,7 +785,7 @@ mod tests {
             ORA ($C0,X)
             SBC ($8D,X)
             STA ($B0,X)
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x61, 0x46,
@@ -825,7 +812,7 @@ mod tests {
             ORA ($7D),Y
             SBC ($35),Y
             STA ($5A),Y
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x71, 0xDF,
@@ -856,7 +843,7 @@ mod tests {
             LDY #$DB
             ORA #$1D
             SBC #$E3
-        ").unwrap();
+        ").unwrap().data;
 
         let hex: Vec<u8> = vec![
             0x69, 0xCA,
@@ -899,7 +886,7 @@ mod tests {
             STA $0C
             STX $6A
             STY $B5
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0x96,
@@ -947,7 +934,7 @@ mod tests {
             SBC $DE,X
             STA $C0,X
             STY $8E,X
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x75, 0x5F,
@@ -976,7 +963,7 @@ mod tests {
         let data = assemble("
             LDX $B3,Y
             STX $7F,Y
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0xB6, 0xB3,
@@ -998,7 +985,7 @@ mod tests {
             BPL $91
             BVC $27
             BVS $D5
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x90, 0xE3, 
@@ -1018,19 +1005,17 @@ mod tests {
 
     #[test]
     fn dummy_label_1() {
-        let src = "
+        let data: Vec<u8> = assemble("
             BEGIN ADC #$c4 
             ADC #$1f
-        ";
+        ").unwrap().data;
 
-        let data: Vec<u8> = assemble(src).unwrap();
+        let hex = vec![
+            0x69, 0xC4,
+            0x69, 0x1F,
+        ];
 
-        assert_eq!(data.len(), 4);
-
-        assert_eq!(data[0], 0x69);
-        assert_eq!(data[1], 0xc4);
-        assert_eq!(data[2], 0x69);
-        assert_eq!(data[3], 0x1f);
+        assert_eq!(data, hex);
     }
 
     #[test]
@@ -1039,7 +1024,7 @@ mod tests {
         let data: Vec<u8> = assemble("
             LSR $4283
             what ADC #$1f
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x4E, 0x83, 0x42,
@@ -1051,14 +1036,12 @@ mod tests {
 
     #[test]
     fn jmp_label_a_backward() {
-        let src = "
+        let data: Vec<u8> = assemble("
             NOP ; putting this here so automatically setting the addr to 0x0000 doesn't pass
             BEGIN LDA #$ff
             ADC #$c4
             JMP BEGIN
-        ";
-
-        let data: Vec<u8> = assemble(src).unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0xEA,
@@ -1077,7 +1060,7 @@ mod tests {
             JMP END
             ADC #$c4
             END LDA #$FF
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0xEA,
@@ -1096,7 +1079,7 @@ mod tests {
             NOP
             START LDA #$01 ; This is the start
             JMP START
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0xEA,
@@ -1109,7 +1092,7 @@ mod tests {
 
     #[test]
     fn jmp_label_multiple() {
-        let src = "
+        let data: Vec<u8> = assemble("
             NOP
             LABEL1  LSR $AC82,X
                     ADC #$11
@@ -1119,9 +1102,7 @@ mod tests {
             LABEL2  ADC $1234
                     LDX #$3F
                     JMP LABEL1
-        ";
-
-        let data: Vec<u8> = assemble(src).unwrap();
+        ").unwrap().data;
 
         let hex: Vec<u8> = vec![
             0xEA,
@@ -1145,7 +1126,7 @@ mod tests {
             BNE LABEL
             ADC $1234
             LABEL LDA #$08
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x6D, 0x34, 0x12,
@@ -1164,7 +1145,7 @@ mod tests {
         LABEL   LDA #$08
                 ADC $1234
                 BNE LABEL
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x6D, 0x34, 0x12,
@@ -1194,7 +1175,7 @@ mod tests {
         let data = assemble("
             VALUE = $38 
             LSR $FF
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x46, 0xFF,
@@ -1217,7 +1198,7 @@ mod tests {
             ADC TWO_BYTE_HEX,Y    ; abs,y
             ADC (ONE_BYTE_HEX,X)  ; Xind 
             ADC (ONE_BYTE_HEX),Y  ; indY
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xAC,
@@ -1247,7 +1228,7 @@ mod tests {
             ADC TWO_BYTE_DEC,Y    ; abs,y
             ADC (ONE_BYTE_DEC,X)  ; Xind 
             ADC (ONE_BYTE_DEC),Y  ; indY
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xFF,
@@ -1277,7 +1258,7 @@ mod tests {
             ADC TWO_BYTE_BIN,Y    ; abs,y
             ADC (ONE_BYTE_BIN,X)  ; Xind 
             ADC (ONE_BYTE_BIN),Y  ; indY
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xFF,
@@ -1308,7 +1289,7 @@ mod tests {
             LABEL   ADC TWO_BYTE_HEX,Y    ; abs,y
                     ADC (ONE_BYTE_HEX,X)  ; Xind 
                     ADC (ONE_BYTE_HEX),Y  ; indY
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xAC,
@@ -1340,7 +1321,7 @@ mod tests {
             LABEL   ADC TWO_BYTE_HEX,Y    ; abs,y
                     ADC (ONE_BYTE_HEX,X)  ; Xind 
                     ADC (ONE_BYTE_HEX),Y  ; indY
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xAC,
@@ -1364,7 +1345,7 @@ mod tests {
             VAR2 = $FF
 
             ADC VAR1
-        ").unwrap();
+        ").unwrap().data;
 
         let hex = vec![
             0x65, 0xFF

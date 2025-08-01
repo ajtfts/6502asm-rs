@@ -1,0 +1,3 @@
+HEY = LabelPos(1)
+WHAT = Raw([24, 49])
+VAR2 = Raw([24, 49])

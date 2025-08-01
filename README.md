@@ -1,4 +1,4 @@
-# 6502asm-rs: 6502 assembler written in Rust
+# 6502asm-rs: a 6502 assembler written in Rust
 
 This is a small personal project. The goal is to achieve syntax compatibility with [64tass](https://sourceforge.net/projects/tass64/), as well to implement its more important features. Here's a very non-exhaustive list of features that still need to be implemented:
 
