@@ -1,2 +1,2 @@
-WHAT = $10
+WHAT = $1000
 ADC WHAT
