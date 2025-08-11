@@ -7,11 +7,6 @@ pub enum AsmError {
         line_num: usize,
         line: String,
     },
-    #[error("")]
-    InvalidOperand {
-        line_num: usize,
-        line: String,
-    },
     #[error("Operand too large (line {line_num}): {line}")]
     OperandTooLarge {
         line_num: usize,
@@ -22,6 +17,8 @@ pub enum AsmError {
     UnresolvedSymbol(String),
     #[error("Undefined symbol: {0}")]
     UndefinedSymbol(String),
+    #[error("Exceeded maximum number of passes ({0}): {1}")]
+    TooManyPasses(usize, usize),
     #[error("Unknown error")]
     Unknown
 }

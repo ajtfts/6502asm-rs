@@ -1,6 +1,2 @@
-WHAT = $1831
-VAR2 = WHAT
-
-ADC VAR2
-; etsanhusanohet
-HEY ADC WHAT
+WHAT = $10
+ADC WHAT

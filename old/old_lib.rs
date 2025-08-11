@@ -1,42 +1,29 @@
-mod listings;
-mod error;
 mod opcodes;
+mod error;
 
-use std::fs::File;
-use std::io::{Read, Write};
-use std::collections::{HashMap, VecDeque};
-
-use anyhow::{Result, bail};
-use lazy_static::lazy_static;
-use regex::Regex;
-use clap::Parser;
-
-use listings::{ListingEntry, write_asm_listing, write_sym_listing};
-use error::AsmError;
 use opcodes::OPCODES;
+use error::AsmError;
+
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use anyhow::Error;
+use lazy_static::lazy_static;
+
+use anyhow::Result;
+use anyhow::bail;
+
+use regex::Regex;
 
 lazy_static! {
-    static ref RE_TOKEN: Regex = Regex::new(r"((;[^\n\r]*)|((\$[0-9a-fA-F]+)|(%[01]+)|(\b\d+)|('[ -~]'))|(\w+)|([^\w\s]))").unwrap();
+    static ref RE_TOKEN: Regex =
+        Regex::new(r"(;[^\n\r]*|(\$[0-9a-fA-F]+|%[01]+|\b\d+)|(\w+)|([^\w\s]))").unwrap();
     static ref RE_WORD: Regex = Regex::new(r"^\w+$").unwrap();
     static ref RE_NUM_LITERAL: Regex = Regex::new(r"(\$[0-9a-fA-F]+|%[01]+|\b\d+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r";[^\n\r]*").unwrap();
+
     static ref RE_HEX_LITERAL: Regex = Regex::new(r"\$[0-9a-fA-F]+").unwrap();
     static ref RE_DEC_LITERAL: Regex = Regex::new(r"\b\d+").unwrap();
     static ref RE_BIN_LITERAL: Regex = Regex::new(r"%[01]+").unwrap();
-}
-
-static MAX_PASSES: usize = 10;
-
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct Args {
-    pub input_fname: String,
-    #[arg(short, long = "output", default_value = "a.out")]
-    pub output_fname: String,
-    #[arg(short = 'L', long = "list")]
-    pub asm_listing_fname: Option<String>,
-    #[arg(short = 'l', long = "labels")]
-    pub sym_listing_fname: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -56,14 +43,11 @@ enum AddressMode {
     ZpgY, // zeropage, Y-indexed
 }
 
-enum Operand {
-    Bytes(Vec<u8>),
+#[derive(Clone, Debug, PartialEq)]
+pub enum Operand {
+    Raw(Vec<u8>),
     Symbol(String),
     LabelPos(usize),
-}
-
-trait AsmItem {
-    fn to_bytes(&self) -> Result<Vec<u8>, AsmError>;
 }
 
 struct Instruction {
@@ -72,189 +56,60 @@ struct Instruction {
     operand: Option<Operand>,
 }
 
-impl AsmItem for Instruction {
-    fn to_bytes(&self) -> Result<Vec<u8>, AsmError> {
-        let mut data = Vec::new();
-        // should be able to unwrap here for now as Instruction is
-        // constructed after checking that OPCODES contains the op name.
-        let opcode = OPCODES.get(&self.name).unwrap()[self.mode as usize]; 
-        data.push(opcode);
-        match &self.operand {
-            Some(Operand::Bytes(bytes)) => {
-                data.append(&mut bytes.clone());
-            },
-            Some(Operand::Symbol(sym)) => {
-                todo!()
-            },
-            Some(Operand::LabelPos(pos)) => {
-                todo!()
-            },
-            None => {}
-        }
-        Ok(data)
-    }
+enum AsmItem {
+    Inst(Instruction),
+    Pc(u16),
+    Data(Vec<u8>),
 }
 
-struct AsmResult {
-    data: Vec<u8>,
-    asm_items: Vec<Box<dyn AsmItem>>,
-    symbols: HashMap<String, Operand>,
-    finished: bool,
+pub struct ListingItem {
+    line_num: Option<usize>,
+    offset: u16,
+    hex: Vec<u8>,
+    monitor: Option<String>,
+    source: Option<String>,
 }
 
-fn tokenize<'h>(src: &'h str) -> VecDeque<&'h str> {
-    RE_TOKEN.find_iter(src).into_iter().map(|m| m.as_str()).collect()
+pub struct AsmResult {
+    pub data: Vec<u8>,
+    pub symbols: HashMap<String, Operand>,
+    pub listing: Vec<ListingItem>,
+}
+
+fn tokenize<'h>(src: &'h str) -> impl Iterator<Item = &'h str> + 'h {
+    RE_TOKEN.find_iter(src).into_iter().map(|m| m.as_str())
 }
 
 fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
     let val: u16;
 
     if RE_HEX_LITERAL.is_match(literal) {
-        return hex::decode(&literal[1..]).map_err(|e| anyhow::Error::new(e))
+        return hex::decode(&literal[1..]).map_err(|e| Error::new(e))
     } else if RE_BIN_LITERAL.is_match(literal) {
-        val = u16::from_str_radix(&literal, 2)?;
+        val = u16::from_str_radix(&literal[1..], 2)?;
     } else if RE_DEC_LITERAL.is_match(literal) {
         val = literal.parse::<u16>()?;
     } else {
         bail!("") // todo
     }
-
+    
     if val > 255 {
-        Ok(val.to_be_bytes().to_vec())
+        return Ok(val.to_be_bytes().to_vec())
     } else {
-        Ok(vec![val as u8])
+        return Ok(vec![val as u8])
     }
 }
 
-fn parse_operand(op_str: &str, line_num: usize, line: &str) -> Result<Operand, AsmError> {
-    if RE_NUM_LITERAL.is_match(&op_str) {
-        Ok(Operand::Bytes(parse_num_literal(op_str).map_err(|_| AsmError::InvalidSyntax { line_num, line: line.to_string() })?))
-    } else if RE_WORD.is_match(&op_str) {
-        Ok(Operand::Symbol(op_str.to_string()))
-    } else {
-        Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
-    }
-}
-
-fn parse_inst(tokens: VecDeque<&str>, line_num: usize, line: &str) -> Result<Instruction, AsmError> {
-    let mut inst: Instruction = Instruction {
-        name: tokens[0].to_uppercase(),
-        mode: AddressMode::Imp,
-        operand: None,
-    };
-
-    match tokens.len() {
-        1 => { /* taken care of by default value for inst */ }, // AddressMode::Imp
-        2 => { // AddressMode::{A, Zpg, Rel, Abs}
-            if tokens[1].to_uppercase() == "A" {
-                inst.mode = AddressMode::A;
-            } else {
-                inst.operand = Some(parse_operand(tokens[1], line_num, line)?);
-
-                match &tokens[0].to_uppercase()[..] {
-                    "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
-                        inst.mode = AddressMode::Rel;
-                    },
-                    _ => {
-                        match inst.operand {
-                            Some(Operand::Bytes(ref bytes)) => {
-                                match bytes.len() {
-                                    1 => inst.mode = AddressMode::Zpg,
-                                    2 => inst.mode = AddressMode::Abs,
-                                    _ => return Err(AsmError::OperandTooLarge { line_num, line: line.to_string(), operand: 0 /* todo */ })
-                                }
-                            },
-                            Some(Operand::Symbol(_)) | Some(Operand::LabelPos(_)) => inst.mode = AddressMode::Abs,
-                            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
-                        }
-                    }
-                }
-            }
-        },
-        3 if tokens[1] == "#" => { // AddressMode::Imm
-            inst.mode = AddressMode::Imm;
-            inst.operand = Some(parse_operand(tokens[2], line_num, line)?);
-        },
-        4 => { // AddressMode::{ZpgX, ZpgY, AbsX, AbsY, Ind}
-            if tokens[1] == "(" && tokens[3] == ")" {
-                inst.mode = AddressMode::Ind;
-                inst.operand = Some(parse_operand(tokens[2], line_num, line)?);
-            } else if tokens[2] == "," {
-                inst.operand = Some(parse_operand(tokens[1], line_num, line)?);
-                inst.mode = match inst.operand {
-                    Some(Operand::Bytes(ref raw)) => match &tokens[3].to_uppercase()[..] {
-                        "X" => match raw.len() {
-                            1 => AddressMode::ZpgX,
-                            2 => AddressMode::AbsX,
-                            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }), 
-                        },
-                        "Y" => match raw.len() {
-                            1 => AddressMode::ZpgY,
-                            2 => AddressMode::AbsY,
-                            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
-                        },
-                        _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
-                    },
-                    Some(Operand::Symbol(ref sym)) => match &sym[..] {
-                        "X" => AddressMode::AbsX,
-                        "Y" => AddressMode::AbsY,
-                        _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
-                    }
-                    _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
-                };
-            } else {
-                return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
-            }
-        },
-        6 => { // AddressMode::{XInd, IndY}
-            if tokens[1] == "("
-                && tokens[3] == ","
-                && tokens[4].to_uppercase() == "X"
-                && tokens[5] == ")"
-            {
-                inst.mode = AddressMode::XInd;
-                inst.operand = Some(parse_operand(tokens[2], line_num, line)?);
-            } 
-            else if tokens[1] == "("
-                && tokens[3] == ")"
-                && tokens[4] == ","
-                && tokens[5].to_uppercase() == "Y"
-            {
-                inst.mode = AddressMode::IndY;
-                inst.operand = Some(parse_operand(tokens[2], line_num, line)?);
-            }
-        },
-        _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
-    }
-
-    Ok(inst)
-}
-
-fn create_data(asm_items: &Vec<Box<dyn AsmItem>>) -> Result<Vec<u8>, AsmError> {
-    let mut data: Vec<u8> = vec![];
-    
-    for item in asm_items {
-        let bytes = item.to_bytes()?;
-        for byte in bytes {
-            data.push(byte);
-        }
-    }
-    
-    Ok(data)
-}
-
-fn first_pass(src: &str) -> Result<AsmResult, AsmError> {
-    let mut asm_items: Vec<Box<dyn AsmItem>> = vec![];
-    let mut symbols: HashMap<String, Operand> = HashMap::new();
+fn first_pass(src: &str, asm_items: &mut Vec<AsmItem>, symbols: &mut HashMap<String, Operand>) -> Result<(), AsmError> {
     for (line_num, line) in src.lines().enumerate() {
-        let mut tokens: VecDeque<&str> = tokenize(line);
+        let mut tokens: VecDeque<&str> = tokenize(line).collect();
 
         // remove comments from end of line
         if !tokens.is_empty() && RE_COMMENT.is_match(&tokens[tokens.len() - 1]) {
             tokens.pop_back();
         }
 
-        // pop labels/assignments
+        // pop labels/assignment
         while tokens.len() > 0 && !opcodes::OPCODES.contains_key(&tokens[0].to_uppercase()) {
             if RE_WORD.is_match(&tokens[0]) {
                 // Assigning to a symbol
@@ -263,124 +118,388 @@ fn first_pass(src: &str) -> Result<AsmResult, AsmError> {
                     if RE_NUM_LITERAL.is_match(operand) {
                         symbols.insert(
                             String::from(tokens.pop_front().unwrap()),
-                            Operand::Bytes(parse_num_literal(operand)
-                                .map_err(|_| AsmError::InvalidSyntax { line_num, line: line.to_string() })?)
-                        );
+                            Operand::Raw(parse_num_literal(operand).unwrap()));
                     } else if RE_WORD.is_match(operand) {
-                        symbols.insert(
-                            String::from(tokens.pop_front().unwrap()),
-                            Operand::Symbol(operand.to_string())
-                        );
+                        symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::Symbol(String::from(operand)));
                     } else if operand == "*" {
                         todo!("pc set not yet supported");
                     }
                     tokens.pop_front();
                     tokens.pop_front();
-                } else {
-                    symbols.insert(tokens.pop_front().unwrap().to_string(), Operand::LabelPos(asm_items.len()));
-                    return Err(AsmError::InvalidSyntax {
-                        line_num,
-                        line: line.to_string()
-                    })
+                } else /* No assignment, so simply pop label from beginning of line */ {
+                    symbols.insert(String::from(tokens.pop_front().unwrap()), Operand::LabelPos(asm_items.len()));
                 }
             } else {
-                return Err(AsmError::InvalidSyntax {
+                return Err(AsmError::InvalidSyntax{
                     line_num,
                     line: line.to_string()
                 })
             }
         }
 
+        // line could potentially just be labels/an assignment/comments
         if tokens.is_empty() {
             continue;
         }
 
-        // handle instructions
-        if OPCODES.contains_key(&tokens[0].to_uppercase()) {
-            let inst = parse_inst(tokens, line_num, line)?;
-            asm_items.push(Box::new(inst));
-        } 
-    }
+        // after removing labels/comments first token should always be the instruction name
+        if !OPCODES.contains_key(&tokens[0].to_uppercase()) {
+            return Err(AsmError::InvalidSyntax {
+                line_num,
+                line: line.to_string()
+            })
+        }
 
+        let mut inst = Instruction {
+            name: String::from(&tokens[0].to_uppercase()),
+            mode: AddressMode::Imp,
+            operand: None,
+        };
 
-    match create_data(&asm_items) {
-        Ok(data) => Ok(AsmResult {
-            data,
-            asm_items,
-            symbols,
-            finished: true,
-        }),
-        Err(e) => Err(e) // do some stuff here to propogate information to subsequent passes
-    }
-}
+        match tokens.len() {
+            1 => { /* taken care of by default value for inst */ } // AddressMode::Imp
+            2 => { // AddressMode::{A, Zpg, Rel, Abs}
+                if tokens[1].to_uppercase() == "A" {
+                    inst.mode = AddressMode::A;
+                } else {
+                    if RE_NUM_LITERAL.is_match(&tokens[1]) {
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[1]).unwrap()));
+                    } else if RE_WORD.is_match(&tokens[1]) {
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
+                    } else {
+                        return Err(AsmError::InvalidSyntax {
+                            line_num,
+                            line: line.to_string()
+                        })
+                    }
 
-fn pass(src: &str, res: &mut AsmResult) -> Result<(), AsmError> {
-
-    todo!();
-
-}
-
-fn assemble(src: &str) -> Result<AsmResult, AsmError> {
-
-    // There are apparently inputs for which 64tass will never terminate (I haven't been able to
-    // figure out what they are yet), which is why we are keeping track of the number of passes here. 
-    let mut res = first_pass(&src)?;
-    let mut pass_count = 1;
-
-    while !res.finished {
-        match pass(&src, &mut res) {
-            Ok(()) => {
-                if pass_count >= MAX_PASSES {
-                    return Err(AsmError::TooManyPasses(MAX_PASSES, pass_count))
+                    match &tokens[0].to_uppercase()[..] {
+                        "BCC" | "BCS" | "BEQ" | "BMI" | "BNE" | "BPL" | "BVC" | "BVS" => {
+                            inst.mode = AddressMode::Rel;
+                        },
+                        _ => {
+                            if let Some(ref op) = inst.operand {
+                                match op {
+                                    Operand::Raw(val) => {
+                                        match val.len() {
+                                            1 => inst.mode = AddressMode::Zpg,
+                                            2 => inst.mode = AddressMode::Abs,
+                                            _ => return Err(AsmError::OperandTooLarge {line_num, line: line.to_string(), operand: 0 /* fix this */ }),
+                                        }
+                                    },
+                                    Operand::Symbol(_) | Operand::LabelPos(_) => {
+                                        inst.mode = AddressMode::Abs;
+                                    },
+                                }
+                            } else {
+                                return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                            }
+                        },
+                    }
                 }
-                pass_count += 1;
-            },
-            Err(e) => return Err(e),
+            }
+            3 if tokens[1] == "#" => { // AddressMode::Imm
+                inst.mode = AddressMode::Imm;
+                let operand = tokens[2];
+                if RE_NUM_LITERAL.is_match(operand) {
+                    inst.operand = Some(Operand::Raw(parse_num_literal(operand).unwrap()));
+                } else if RE_WORD.is_match(operand) {
+                    inst.operand = Some(Operand::Symbol(String::from(operand)));
+                } else {
+                    return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                }
+            }
+            4 => { // AddressMode::{ZpgX, ZpgY, AbsX, AbsY, Ind}
+                if tokens[1] == "(" && tokens[3] == ")" {
+                    inst.mode = AddressMode::Ind;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2]).unwrap()));
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
+                    } else {
+                        return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                    }
+                } else if tokens[2] == "," {
+                    if RE_NUM_LITERAL.is_match(&tokens[1]) {
+                        let raw_val = parse_num_literal(&tokens[1]).unwrap();
+                        inst.operand = Some(Operand::Raw(raw_val.clone()));
+                        inst.mode = match &tokens[3].to_uppercase()[..] {
+                            "X" => match raw_val.len() {
+                                1 => AddressMode::ZpgX,
+                                2 => AddressMode::AbsX,
+                                _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
+                            },
+                            "Y" => match raw_val.len() {
+                                1 => AddressMode::ZpgY,
+                                2 => AddressMode::AbsY,
+                                _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
+                            },
+                            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
+                        };
+                    } else if RE_WORD.is_match(&tokens[1]) {
+                        inst.mode = match &tokens[3].to_uppercase()[..] {
+                            "X" => AddressMode::AbsX,
+                            "Y" => AddressMode::AbsY,
+                            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
+                        };
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[1])));
+                    } else {
+                        return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                    }
+                } else {
+                    return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                }
+            }
+            6 => { // AddressMode::{XInd, IndY}
+                if tokens[1] == "("
+                    && tokens[3] == ","
+                    && tokens[4].to_uppercase() == "X"
+                    && tokens[5] == ")"
+                {
+                    inst.mode = AddressMode::XInd;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2]).unwrap()));
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[2])));
+                    }
+                } else if tokens[1] == "("
+                    && tokens[3] == ")"
+                    && tokens[4] == ","
+                    && tokens[5].to_uppercase() == "Y"
+                {
+                    inst.mode = AddressMode::IndY;
+                    if RE_NUM_LITERAL.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Raw(parse_num_literal(&tokens[2]).unwrap()));
+                    } else if RE_WORD.is_match(&tokens[2]) {
+                        inst.operand = Some(Operand::Symbol(String::from(tokens[2])));
+                    }
+                } else {
+                    return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() })
+                }
+            }
+            _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
+        }
+
+        asm_items.push(AsmItem::Inst(inst));
+    }
+
+    Ok(())
+
+}
+
+fn resolve_symbols(symbols: &mut HashMap<String, Operand>) -> Result<(), AsmError> {
+    let mut to_update: HashMap<String, Operand> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (key_symbol, operand) in symbols.iter() { 
+        let mut current: &Operand = operand;
+
+        loop {
+            match current {
+                Operand::Raw(val) => {
+                    to_update.insert(key_symbol.to_string(), Operand::Raw(val.clone()));
+                    break;
+                },
+                Operand::LabelPos(inst_pos) => {
+                    to_update.insert(key_symbol.to_string(), Operand::LabelPos(*inst_pos));
+                    break;
+                },
+                Operand::Symbol(sym) => {
+                    if !seen.contains(key_symbol) && let Some(new_op) = symbols.get(sym) {
+                        current = new_op;
+                        seen.insert(key_symbol.to_string());
+                    } else {
+                        return Err(AsmError::UndefinedSymbol(sym.to_string()));
+                    }
+                },
+            }
         }
     }
 
-    Ok(res)
-}
-
-pub fn run(args: Args) -> Result<()> {
-
-    println!("Assembling file:    {}", args.input_fname);
-    let mut input_file = File::open(args.input_fname)?;
-    let mut src = String::new();
-    input_file.read_to_string(&mut src)?;
-
-    match assemble(&src) {
-        Ok(res) => {
-            let mut output_file = File::create(&args.output_fname)?;
-            output_file.write_all(&res.data)?;
-
-            println!("Output file:        {}", args.output_fname);
-
-            // Write to assembly listing file
-            if let Some(asm_listing_fname) = args.asm_listing_fname {
-                let mut asm_listing_file = File::create(asm_listing_fname)?;
-                todo!();//write_asm_listing(res.asm_listing, &mut asm_listing_file);
-            }
-
-            // Write to symbol listing file
-            if let Some(sym_listing_fname) = args.sym_listing_fname {
-                let mut sym_listing_file = File::create(sym_listing_fname)?;
-                write_sym_listing(res.symbols, &mut sym_listing_file);
-            }
-        },
-        Err(e) => bail!(e),
+    for (symbol, operand) in to_update.into_iter() {
+        symbols.insert(symbol, operand);
     }
 
     Ok(())
 }
 
+fn update_labels() {
+    
+}
+
+pub fn assemble(src: &str) -> Result<AsmResult, AsmError> {
+    let mut data: Vec<u8> = vec![];
+
+    let mut asm_items: Vec<AsmItem> = vec![];
+    let mut symbols: HashMap<String, Operand> = HashMap::new();
+
+    first_pass(src, &mut asm_items, &mut symbols)?;
+
+    resolve_symbols(&mut symbols)?;
+
+    let mut pc: u16 = 0x0000; // TODO: allow for this to be set by *=
+
+    // each nth entry in inst_addrs represents the program counter at the beginning of the nth instruction
+    let mut inst_addrs: Vec<u16> = vec![0; asm_items.len()];
+
+    // mapping from a label's position in the instructions vector to a vector of addresses  
+    // representing the instructions which will need to be set to that label once labels are resolved
+    let mut label_updates: HashMap<usize, Vec<usize>> = HashMap::new();
+
+
+    // "2nd pass". by the end of this for loop the data array should be mostly correct,
+    // though label addresses will of course need to be updated after the fact
+    for (i, asm_item) in asm_items.iter().enumerate() {
+        
+        inst_addrs[i] = pc;
+
+        match asm_item {
+            AsmItem::Inst(inst) => {
+                match &inst.operand {
+                    Some(Operand::Raw(val)) => {
+                        let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                        data.push(opcode);
+                        pc += 1;
+
+                        for byte in val.into_iter().rev() {
+                            data.push(*byte);
+                            pc += 1;
+                        }
+                    },
+                    Some(Operand::LabelPos(_)) => return Err(AsmError::Unknown),
+                    Some(Operand::Symbol(sym)) => {
+                        match symbols.get(sym) {
+                            Some(Operand::Raw(val)) => {
+                                let addr_mode = match inst.mode {
+                                    AddressMode::Abs => {
+                                        match val.len() {
+                                            1 => AddressMode::Zpg,
+                                            2 => AddressMode::Abs,
+                                            _ => return Err(AsmError::Unknown),
+                                        }
+                                    },
+                                    AddressMode::AbsX => {
+                                        match val.len() {
+                                            1 => AddressMode::ZpgX,
+                                            2 => AddressMode::AbsX,
+                                            _ => return Err(AsmError::Unknown),
+                                        }
+                                    },
+                                    AddressMode::AbsY => {
+                                        match val.len() {
+                                            1 => AddressMode::ZpgY,
+                                            2 => AddressMode::AbsY,
+                                            _ => return Err(AsmError::Unknown),
+                                        }
+                                    }
+                                    _ => inst.mode,
+                                };
+                                let opcode = OPCODES.get(&inst.name).unwrap()[addr_mode as usize];
+                                data.push(opcode);
+                                pc += 1;
+                                for byte in val.into_iter().rev() {
+                                    data.push(*byte);
+                                    pc += 1;
+                                }
+                            },
+                            Some(Operand::LabelPos(pos)) => {
+
+                                // Mark this position for later change
+                                label_updates.entry(*pos).or_insert(Vec::new()).push(i);
+
+                                let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                                data.push(opcode);
+                                pc += 1;
+
+                                // We'll come back and set these properly after we've determined all instruction addresses.
+                                match inst.mode {
+                                    AddressMode::Rel => {
+                                        data.push(0x00);
+                                        pc += 1;
+                                    },
+                                    _ => {
+                                        data.push(0x00); // For now, we assume labels will always refer to two byte addresses.
+                                        data.push(0x00);
+                                        pc += 2;
+                                    },
+                                }
+                            },
+                            None => return Err(AsmError::UndefinedSymbol(sym.to_string())),
+                            _ => return Err(AsmError::UnresolvedSymbol(sym.to_string())),
+                        } 
+                    },
+                    _ => {
+                        let opcode = OPCODES.get(&inst.name).unwrap()[inst.mode as usize];
+                        data.push(opcode);
+                        pc += 1;
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+
+    // TODO come up with a sensible naming convention. probably temporary anyway.
+    // Maybe move to a helper function
+    let mut l_updates: HashMap<String, Vec<u8>> = HashMap::new();
+
+    for (sym, oper) in symbols.iter() {
+        match oper {
+            Operand::LabelPos(pos) => {
+                let val: Vec<u8> = vec![(inst_addrs[*pos] % 16) as u8, (inst_addrs[*pos] / 16) as u8];
+                l_updates.insert(sym.to_string(), val);
+            },
+            _ => {},
+        }
+    }
+
+    for (sym, bytes) in l_updates {
+        symbols.insert(sym, Operand::Raw(bytes));
+    }
+
+    for (label_pos, to_update) in label_updates {
+        for inst_pos in to_update {
+            let item = &asm_items[inst_pos];
+            let mut val: Vec<u8> = vec![];
+
+            match item {
+                AsmItem::Inst(inst) => {
+                    match inst.mode {
+                        AddressMode::Rel => {
+                            let rel_addr = (inst_addrs[label_pos] as i16 - (inst_addrs[inst_pos] as i16 + 2)) as u8;
+                            val.push(rel_addr);
+                        },
+                        AddressMode::Abs | AddressMode::AbsX | AddressMode::AbsY | AddressMode::Ind  => {
+                            val.push((inst_addrs[label_pos] % 16) as u8);
+                            val.push((inst_addrs[label_pos] / 16) as u8);
+                        },
+                        _ => return Err(AsmError::Unknown),
+                    }
+                    for (i, byte) in val.iter().enumerate() {
+                        data[inst_addrs[inst_pos] as usize + i + 1] = *byte;
+                    }
+                }
+                _ => return Err(AsmError::Unknown),
+            }
+            
+        }
+    }
+
+    Ok(AsmResult {
+        data,
+        symbols,
+        listing: vec![],
+    })
+}
+
+
 #[rustfmt::skip]
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use proptest::prelude::*;
+    use proptest::prelude::*;
 
-    /*proptest! {
+    proptest! {
         #[test]
         fn assemble_doesnt_crash(s in "\\PC*") {
             let _ = assemble(&s);
@@ -399,7 +518,57 @@ mod tests {
 
             assert_eq!(data.len(), 1);
         }*/
-    }*/
+    }
+
+    // Tokenization
+    #[test]
+    fn tokenize_imp() {
+        let tokens: Vec<_> = tokenize("BRK").collect();
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], "BRK");
+    }
+
+    #[test]
+    fn tokenize_acc() {
+        let tokens: Vec<_> = tokenize("LSR A").collect();
+
+        assert_eq!(tokens.len(), 2);
+
+        assert_eq!(tokens[0], "LSR");
+        assert_eq!(tokens[1], "A");
+    }
+
+    #[test]
+    fn tokenize_comment() {
+        let src = "LSR A;here's a comment! awfully close there...";
+        let tokens: Vec<_> = tokenize(src).collect();
+
+
+        assert_eq!(tokens, vec![
+            "LSR", "A", ";here's a comment! awfully close there..."
+        ]);
+    }
+
+    #[test]
+    fn tokenize_abs() {
+        let src = "LDA $3c1d";
+        let tokens: Vec<_> = tokenize(src).collect();
+
+        assert_eq!(tokens, vec![
+            "LDA", "$3c1d",
+        ]);
+    }
+
+    #[test]
+    fn tokenize_zp_x() {
+        let src = "LSR $01,X";
+        let tokens: Vec<_> = tokenize(src).collect();
+
+        assert_eq!(tokens, vec![
+            "LSR", "$01", ",", "X",
+        ]);
+    }
 
     // Instruction parsing
 
@@ -1221,7 +1390,7 @@ mod tests {
 
     // Resolve symbols
 
-    /*#[test]
+    #[test]
     fn resolve_constants() {
         let mut symbols: HashMap<String, Operand> = HashMap::new();
 
@@ -1234,6 +1403,6 @@ mod tests {
 
         assert_eq!(*symbols.get("VAR1").unwrap(), operand);
         assert_eq!(*symbols.get("VAR2").unwrap(), operand);
-    }*/
+    }
 
 }
