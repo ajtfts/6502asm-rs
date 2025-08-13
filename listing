@@ -1,17 +1,5 @@
+6502asm Assembler V0.1.0 listing file
+;******  Processing input file: listing
 
-; 64tass Turbo Assembler Macro V1.60.3243 listing file
-; 64tass -L listing tests/test1.asm
-; Tue Aug 12 18:45:35 2025
-
-;Offset	;Hex		;Monitor	;Source
-
-;******  Processing input file: tests/test1.asm
-
-.0000	65 10		adc $10		ADC WHAT
-=$10					THE = WHAT
-=$10					WHAT = $10
-=$0010					EU = $0010
-=30					HEUU = 30
-=$8a					HEY = %10001010
 
 ;******  End of listing

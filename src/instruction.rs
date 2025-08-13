@@ -115,7 +115,7 @@ pub fn parse_inst(tokens: VecDeque<&str>, line_num: usize, line: &str) -> Result
                         },
                         _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),
                     },
-                    Some(Operand::Symbol(ref sym)) => match &tokens[3].to_uppercase()[..] {
+                    Some(Operand::Symbol(_)) => match &tokens[3].to_uppercase()[..] {
                         "X" => AddressMode::AbsX,
                         "Y" => AddressMode::AbsY,
                         _ => return Err(AsmError::InvalidSyntax { line_num, line: line.to_string() }),

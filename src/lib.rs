@@ -12,10 +12,12 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use clap::Parser;
 
-use listings::{ListingEntry, write_asm_listing, write_sym_listing};
+use listings::{write_asm_listing, write_sym_listing};
 use error::AsmError;
 use opcodes::OPCODES;
 use instruction::{Operand, Instruction, parse_inst};
+
+use crate::instruction::AddressMode;
 
 lazy_static! {
     static ref RE_TOKEN: Regex = Regex::new(r"((;[^\n\r]*)|((\$[0-9a-fA-F]+)|(%[01]+)|(\b\d+)|('[ -~]'))|(\w+)|([^\w\s]))").unwrap();
@@ -73,14 +75,27 @@ impl AsmItem for Instruction {
         match self.operand.take() {
             Some(Operand::Symbol(sym)) => {
                 match symbols.get(&sym) {
-                    
                     Some(Operand::Bytes(val)) => {
+                        self.mode = match val.len() {
+                            1 => match self.mode {
+                                AddressMode::Abs => AddressMode::Zpg,
+                                AddressMode::AbsX => AddressMode::ZpgX,
+                                AddressMode::AbsY => AddressMode::ZpgY,
+                                _ => self.mode,
+                            },
+                            2 => match self.mode {
+                                AddressMode::Zpg => AddressMode::Abs,
+                                AddressMode::ZpgX => AddressMode::AbsX,
+                                AddressMode::ZpgY => AddressMode::ZpgY,
+                                _ => self.mode,
+                            }
+                            _ => return Err(AsmError::Unknown),
+                        };
                         self.operand = Some(Operand::Bytes(val.clone()));
                     },
                     Some(Operand::Pos(pos)) => {
                         self.operand = Some(Operand::Pos(*pos));
                     },
-
                     Some(Operand::Symbol(_other_sym)) => return Err(AsmError::UnresolvedSymbol(sym.to_string())),
                     None => return Err(AsmError::UndefinedSymbol(sym.to_string())),
                 }
@@ -165,14 +180,15 @@ fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
     }
 }
 
-fn create_data(asm_items: &Vec<Box<dyn AsmItem>>) -> Result<(Vec<u8>, Vec<usize>), AsmError> {
+fn create_data(asm_items: &mut Vec<Box<dyn AsmItem>>, symbols: &HashMap<String, Operand>) -> Result<(Vec<u8>, Vec<usize>), AsmError> {
     let mut data: Vec<u8> = vec![];
     let mut pcs: Vec<usize> = vec![];
 
     let mut pc = 0x0000;
 
-    for item in asm_items {
+    for item in asm_items.iter_mut() {
         pcs.push(pc);
+        item.update(symbols)?;
         let bytes = item.to_bytes()?;
         for byte in bytes {
             data.push(byte);
@@ -238,7 +254,7 @@ fn first_pass(src: &str) -> Result<AsmState, AsmError> {
         }
     }
 
-    match create_data(&asm_items) {
+    match create_data(&mut asm_items, &symbols) {
         Ok((data, pcs)) => Ok(AsmState {
             data,
             asm_items,
@@ -261,11 +277,14 @@ fn pass(src: &str, state: &mut AsmState) -> Result<(), AsmError> {
 
     resolve_symbols(&mut state.symbols)?;
 
-    for i in 0..state.asm_items.len() {
-        state.asm_items[i].update(&state.symbols)?;
+    match create_data(&mut state.asm_items, &state.symbols) {
+        Ok((data, pcs)) => {
+            state.data = data;
+            state.pcs = pcs;
+            state.finished = true;
+        },
+        Err(e) => return Err(e)
     }
-
-    state.finished = true;
 
     Ok(())
 }
@@ -308,14 +327,12 @@ pub fn run(args: Args) -> Result<()> {
 
             // Write to assembly listing file
             if let Some(asm_listing_fname) = args.asm_listing_fname {
-                let mut asm_listing_file = File::create(asm_listing_fname)?;
-                todo!();//write_asm_listing(res.asm_listing, &mut asm_listing_file);
+                write_asm_listing(&src, state.data, state.pcs, asm_listing_fname)?;
             }
 
             // Write to symbol listing file
             if let Some(sym_listing_fname) = args.sym_listing_fname {
-                let mut sym_listing_file = File::create(sym_listing_fname)?;
-                write_sym_listing(state.symbols, &mut sym_listing_file);
+                write_sym_listing(state.symbols, sym_listing_fname)?;
             }
         },
         Err(e) => bail!(e),
