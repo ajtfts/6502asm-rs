@@ -43,9 +43,11 @@ pub struct Args {
 
 trait AsmItem {
     fn to_bytes(&self) -> Result<Vec<u8>, AsmError>;
+    fn update(&mut self, symbols: &HashMap<String, Operand>) -> Result<(), AsmError>;
 }
 
 impl AsmItem for Instruction {
+
     fn to_bytes(&self) -> Result<Vec<u8>, AsmError> {
         let mut data = Vec::new();
         // should be able to unwrap here for now as Instruction is
@@ -66,11 +68,39 @@ impl AsmItem for Instruction {
         }
         Ok(data)
     }
+
+    fn update(&mut self, symbols: &HashMap<String, Operand>) -> Result<(), AsmError> {
+        match self.operand.take() {
+            Some(Operand::Symbol(sym)) => {
+                match symbols.get(&sym) {
+                    
+                    Some(Operand::Bytes(val)) => {
+                        self.operand = Some(Operand::Bytes(val.clone()));
+                    },
+                    Some(Operand::Pos(pos)) => {
+                        self.operand = Some(Operand::Pos(*pos));
+                    },
+
+                    Some(Operand::Symbol(_other_sym)) => return Err(AsmError::UnresolvedSymbol(sym.to_string())),
+                    None => return Err(AsmError::UndefinedSymbol(sym.to_string())),
+                }
+            },
+            Some(Operand::Pos(pos)) => {
+                self.operand = Some(Operand::Pos(pos));
+            },
+            Some(Operand::Bytes(bytes)) => {
+                self.operand = Some(Operand::Bytes(bytes));
+            },
+            None => {},
+        }
+        Ok(())
+    }
 }
 
-struct AsmResult {
+struct AsmState {
     data: Vec<u8>,
     asm_items: Vec<Box<dyn AsmItem>>,
+    pcs: Vec<usize>, // keeps track of the program counter for each element of asm_items
     symbols: HashMap<String, Operand>,
     finished: bool,
 }
@@ -97,7 +127,7 @@ fn resolve_symbols(symbols: &mut HashMap<String, Operand>) -> Result<(), AsmErro
                         current = new_op;
                         seen.insert(key_symbol.to_string());
                     } else {
-                        return Err(AsmError::UndefinedSymbol(sym.to_string())); // type on this might need to change
+                        return Err(AsmError::UndefinedSymbol(sym.to_string())); // enum on this might need to change
                     }
                 },
             }
@@ -135,20 +165,25 @@ fn parse_num_literal(literal: &str) -> Result<Vec<u8>> {
     }
 }
 
-fn create_data(asm_items: &Vec<Box<dyn AsmItem>>) -> Result<Vec<u8>, AsmError> {
+fn create_data(asm_items: &Vec<Box<dyn AsmItem>>) -> Result<(Vec<u8>, Vec<usize>), AsmError> {
     let mut data: Vec<u8> = vec![];
-    
+    let mut pcs: Vec<usize> = vec![];
+
+    let mut pc = 0x0000;
+
     for item in asm_items {
+        pcs.push(pc);
         let bytes = item.to_bytes()?;
         for byte in bytes {
             data.push(byte);
+            pc += 1;
         }
     }
     
-    Ok(data)
+    Ok((data, pcs))
 }
 
-fn first_pass(src: &str) -> Result<AsmResult, AsmError> {
+fn first_pass(src: &str) -> Result<AsmState, AsmError> {
     let mut asm_items: Vec<Box<dyn AsmItem>> = vec![];
     let mut symbols: HashMap<String, Operand> = HashMap::new();
     for (line_num, line) in src.lines().enumerate() {
@@ -204,32 +239,38 @@ fn first_pass(src: &str) -> Result<AsmResult, AsmError> {
     }
 
     match create_data(&asm_items) {
-        Ok(data) => Ok(AsmResult {
+        Ok((data, pcs)) => Ok(AsmState {
             data,
             asm_items,
             symbols,
+            pcs,
             finished: true,
         }),
-        Err(AsmError::UnresolvedSymbol(_)) => Ok(AsmResult {
+        Err(AsmError::UnresolvedSymbol(_)) => Ok(AsmState {
             data: vec![],
             asm_items,
             symbols,
+            pcs: vec![],
             finished: false,
         }),
         Err(e) => Err(e)
     }
 }
 
-fn pass(src: &str, res: &mut AsmResult) -> Result<(), AsmError> {
+fn pass(src: &str, state: &mut AsmState) -> Result<(), AsmError> {
 
-    resolve_symbols(&mut res.symbols)?;
+    resolve_symbols(&mut state.symbols)?;
 
-    res.finished = true;
+    for i in 0..state.asm_items.len() {
+        state.asm_items[i].update(&state.symbols)?;
+    }
+
+    state.finished = true;
 
     Ok(())
 }
 
-fn assemble(src: &str) -> Result<AsmResult, AsmError> {
+fn assemble(src: &str) -> Result<AsmState, AsmError> {
 
     // There are apparently inputs for which 64tass will never terminate (I haven't been able to
     // figure out what they are yet), which is why we are keeping track of the number of passes here. 
@@ -259,9 +300,9 @@ pub fn run(args: Args) -> Result<()> {
     input_file.read_to_string(&mut src)?;
 
     match assemble(&src) {
-        Ok(res) => {
+        Ok(state) => {
             let mut output_file = File::create(&args.output_fname)?;
-            output_file.write_all(&res.data)?;
+            output_file.write_all(&state.data)?;
 
             println!("Output file:        {}", args.output_fname);
 
@@ -274,7 +315,7 @@ pub fn run(args: Args) -> Result<()> {
             // Write to symbol listing file
             if let Some(sym_listing_fname) = args.sym_listing_fname {
                 let mut sym_listing_file = File::create(sym_listing_fname)?;
-                write_sym_listing(res.symbols, &mut sym_listing_file);
+                write_sym_listing(state.symbols, &mut sym_listing_file);
             }
         },
         Err(e) => bail!(e),

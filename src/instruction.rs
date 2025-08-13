@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::fmt::Display;
+use hex::ToHex;
 use crate::error::AsmError;
 use crate::{RE_NUM_LITERAL, RE_WORD, parse_num_literal};
 
@@ -19,10 +21,23 @@ pub enum AddressMode {
     ZpgY, // zeropage, Y-indexed
 }
 
+#[derive(Debug)]
 pub enum Operand {
     Bytes(Vec<u8>),
     Symbol(String),
     Pos(usize), // represents a position in the AsmItem vector
+}
+
+
+
+impl Display for Operand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Operand::Bytes(bytes) => write!(f, "${}", bytes.encode_hex::<String>()),
+            Operand::Symbol(sym) => write!(f, "{}", sym),
+            Operand::Pos(pos) => write!(f, "POS: {}", pos), // may want to just return an Error here
+        }
+    }
 }
 
 pub struct Instruction {
